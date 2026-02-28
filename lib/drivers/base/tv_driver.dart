@@ -10,5 +10,6 @@ abstract class TvDriver {
   Future<void> sendCommand(TvCommand command);
   Future<void> disconnect();
 
+  // IMPORTANT: some of your build errors indicate isConnected is expected.
   bool get isConnected => state == DriverState.connected;
 }
