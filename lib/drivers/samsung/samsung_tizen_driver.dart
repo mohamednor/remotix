@@ -1,8 +1,7 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
+// lib/drivers/androidtv/android_tv_driver.dart
 
-import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:async';
+import 'dart:io';
 
 import '../base/tv_driver.dart';
 import '../../domain/entities/tv_command.dart';
@@ -10,13 +9,9 @@ import '../../core/utils/app_logger.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/error/exceptions.dart';
 
-// ✅ WOL + MAC storage
-import '../../core/network/wol.dart';
-import '../../core/storage/tv_storage.dart';
-
-class SamsungTizenDriver implements TvDriver {
+class AndroidTvDriver implements TvDriver {
   final String ipAddress;
-  WebSocket? _socket;
+  Socket? _socket;
   int _reconnectAttempts = 0;
 
   final StreamController<DriverState> _stateController =
@@ -24,9 +19,7 @@ class SamsungTizenDriver implements TvDriver {
 
   DriverState _state = DriverState.disconnected;
 
-  String? _token;
-
-  SamsungTizenDriver(this.ipAddress);
+  AndroidTvDriver(this.ipAddress);
 
   @override
   DriverState get state => _state;
@@ -34,169 +27,100 @@ class SamsungTizenDriver implements TvDriver {
   @override
   Stream<DriverState> get stateStream => _stateController.stream;
 
+  @override
+  bool get isConnected => _state == DriverState.connected;
+
   void _setState(DriverState s) {
     _state = s;
     _stateController.add(s);
   }
 
-  String get _prefsTokenKey => 'samsung_tizen_token_$ipAddress';
-
-  static const Map<TvCommand, String> _keyMap = {
-    TvCommand.power: 'KEY_POWER',
-    TvCommand.volumeUp: 'KEY_VOLUP',
-    TvCommand.volumeDown: 'KEY_VOLDOWN',
-    TvCommand.mute: 'KEY_MUTE',
-    TvCommand.channelUp: 'KEY_CHUP',
-    TvCommand.channelDown: 'KEY_CHDOWN',
-    TvCommand.up: 'KEY_UP',
-    TvCommand.down: 'KEY_DOWN',
-    TvCommand.left: 'KEY_LEFT',
-    TvCommand.right: 'KEY_RIGHT',
-    TvCommand.ok: 'KEY_ENTER',
-    TvCommand.home: 'KEY_HOME',
-    TvCommand.back: 'KEY_RETURN',
+  static const Map<TvCommand, int> _keycodeMap = {
+    TvCommand.power: 26,
+    TvCommand.volumeUp: 24,
+    TvCommand.volumeDown: 25,
+    TvCommand.mute: 164,
+    TvCommand.channelUp: 166,
+    TvCommand.channelDown: 167,
+    TvCommand.up: 19,
+    TvCommand.down: 20,
+    TvCommand.left: 21,
+    TvCommand.right: 22,
+    TvCommand.ok: 23,
+    TvCommand.home: 3,
+    TvCommand.back: 4,
   };
-
-  Future<void> _loadToken() async {
-    final prefs = await SharedPreferences.getInstance();
-    _token = prefs.getString(_prefsTokenKey);
-  }
-
-  Future<void> _saveToken(String token) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_prefsTokenKey, token);
-    _token = token;
-    AppLogger.i('Samsung: Saved token');
-  }
-
-  Future<WebSocket> _tryConnect(String url) async {
-    AppLogger.i('Samsung: Trying $url');
-    return await WebSocket.connect(url).timeout(AppConstants.connectTimeout);
-  }
 
   @override
   Future<void> connect() async {
     try {
       _setState(DriverState.connecting);
-      await _loadToken();
 
-      final appName = 'Remotix';
-      final nameBase64 = base64Encode(utf8.encode(appName));
-      final nameEncoded = Uri.encodeComponent(appName);
-      final tokenParam =
-          (_token != null && _token!.isNotEmpty) ? '&token=$_token' : '';
+      AppLogger.i(
+          'AndroidTV: Connecting to $ipAddress:${AppConstants.androidTvPort}');
 
-      final urlBase64 =
-          'ws://$ipAddress:${AppConstants.samsungTizenPort}'
-          '/api/v2/channels/samsung.remote.control?name=$nameBase64$tokenParam';
+      _socket = await Socket.connect(
+        ipAddress,
+        AppConstants.androidTvPort,
+        timeout: AppConstants.connectTimeout,
+      );
 
-      final urlEncoded =
-          'ws://$ipAddress:${AppConstants.samsungTizenPort}'
-          '/api/v2/channels/samsung.remote.control?name=$nameEncoded$tokenParam';
-
-      try {
-        _socket = await _tryConnect(urlBase64);
-      } catch (_) {
-        _socket = await _tryConnect(urlEncoded);
-      }
+      _setState(DriverState.connected);
+      _reconnectAttempts = 0;
 
       _socket!.listen(
-        (dynamic data) {
-          AppLogger.d('Samsung RX: $data');
-          _handleMessage(data);
-        },
-        onError: (Object e) {
-          AppLogger.e('Samsung WebSocket error', e);
+        (data) => AppLogger.d('AndroidTV RX: ${data.length} bytes'),
+        onError: (e) {
+          AppLogger.e('AndroidTV socket error', e);
           _setState(DriverState.error);
           _scheduleReconnect();
         },
         onDone: () {
-          AppLogger.w('Samsung WebSocket closed');
+          AppLogger.w('AndroidTV socket closed');
           _setState(DriverState.disconnected);
         },
       );
 
-      _reconnectAttempts = 0;
-      _setState(DriverState.connected);
-      AppLogger.i('Samsung: Connected');
+      AppLogger.i('AndroidTV: Connected');
+    } on SocketException catch (e) {
+      _setState(DriverState.error);
+      throw ConnectionException('AndroidTV connection failed: ${e.message}');
     } on TimeoutException {
       _setState(DriverState.error);
-      throw const ConnectionException('Samsung connection timed out');
+      throw const ConnectionException('AndroidTV connection timed out');
     } catch (e, st) {
       _setState(DriverState.error);
-      AppLogger.e('Samsung connect failed', e, st);
-      throw ConnectionException('Samsung connect failed: $e');
+      AppLogger.e('AndroidTV connect failed', e, st);
+      throw ConnectionException('AndroidTV connect failed: $e');
     }
   }
 
-  void _handleMessage(dynamic data) async {
-    try {
-      final msg = jsonDecode(data.toString());
-      final event = msg['event'];
-
-      // Token can arrive in connect event
-      if (event == 'ms.channel.connect') {
-        final token = msg['data']?['token'];
-        if (token is String && token.isNotEmpty && token != _token) {
-          await _saveToken(token);
-        }
-      }
-    } catch (_) {
-      // ignore
-    }
-  }
-  @override
-bool get isConnected => _state == DriverState.connected;
   @override
   Future<void> sendCommand(TvCommand command) async {
-    // ✅ If TV is OFF (not connected) and user presses Power -> try Wake-on-LAN
-    if (command == TvCommand.power && !isConnected) {
-      final mac = await TvStorage.loadMac(ipAddress);
-      if (mac == null || mac.trim().isEmpty) {
-        throw const DriverException('MAC not set (needed for Wake-on-LAN)');
-      }
-      AppLogger.i('Samsung WOL: Sending magic packet to $mac');
-      await WakeOnLan.wake(macAddress: mac);
-      return;
-    }
-
     if (!isConnected) throw const DriverException('Not connected');
 
-    final key = _keyMap[command];
-    if (key == null) {
-      AppLogger.w('Samsung: No key mapping for $command');
-      return;
-    }
+    final keycode = _keycodeMap[command];
+    if (keycode == null) return;
 
     try {
-      final payload = jsonEncode({
-        'method': 'ms.remote.control',
-        'params': {
-          'Cmd': 'Click',
-          'DataOfCmd': key,
-          'Option': 'false',
-          'TypeOfRemote': 'SendRemoteKey',
-        },
-      });
-
-      _socket!.add(payload);
-      AppLogger.d('Samsung: Sent $command -> $key');
+      // NOTE: ده مش ADB كامل، غالباً مش هيشتغل على أجهزة كتير بدون pairing/auth.
+      final cmd = 'input keyevent $keycode\n';
+      _socket!.write(cmd);
+      await _socket!.flush();
+      AppLogger.d('AndroidTV: Sent $command -> $keycode');
     } catch (e, st) {
-      AppLogger.e('Samsung sendCommand error', e, st);
+      AppLogger.e('AndroidTV sendCommand error', e, st);
     }
   }
 
   void _scheduleReconnect() {
-    if (_reconnectAttempts >= AppConstants.maxReconnectAttempts) {
-      AppLogger.w('Samsung: Max reconnect attempts reached');
-      return;
-    }
+    if (_reconnectAttempts >= AppConstants.maxReconnectAttempts) return;
     _reconnectAttempts++;
     Future.delayed(AppConstants.reconnectDelay, () async {
       try {
         await connect();
       } catch (e) {
-        AppLogger.e('Samsung reconnect failed', e);
+        AppLogger.e('AndroidTV reconnect failed', e);
       }
     });
   }
@@ -209,7 +133,6 @@ bool get isConnected => _state == DriverState.connected;
       // ignore
     } finally {
       _setState(DriverState.disconnected);
-      AppLogger.i('Samsung: Disconnected');
     }
   }
 }
