@@ -10,7 +10,7 @@ import '../../core/utils/app_logger.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/error/exceptions.dart';
 
-class SamsungTizenDriver implements TvDriver {
+class SamsungTizenDriver extends TvDriver {
   final String ipAddress;
   WebSocket? _socket;
   int _reconnectAttempts = 0;
@@ -29,9 +29,6 @@ class SamsungTizenDriver implements TvDriver {
 
   @override
   Stream<DriverState> get stateStream => _stateController.stream;
-
-  @override
-  bool get isConnected => _state == DriverState.connected;
 
   void _setState(DriverState s) {
     _state = s;
@@ -71,11 +68,6 @@ class SamsungTizenDriver implements TvDriver {
     AppLogger.i('Samsung: Saved token');
   }
 
-  Future<WebSocket> _tryConnect(String url) async {
-    AppLogger.i('Samsung: Trying $url');
-    return await WebSocket.connect(url).timeout(AppConstants.connectTimeout);
-  }
-
   @override
   Future<void> connect() async {
     try {
@@ -84,13 +76,15 @@ class SamsungTizenDriver implements TvDriver {
 
       final appName = 'Remotix';
       final nameBase64 = base64Encode(utf8.encode(appName));
-      final tokenParam = (_token != null && _token!.isNotEmpty) ? '&token=$_token' : '';
+      final tokenParam =
+          (_token != null && _token!.isNotEmpty) ? '&token=$_token' : '';
 
       final url =
           'ws://$ipAddress:${AppConstants.samsungTizenPort}'
           '/api/v2/channels/samsung.remote.control?name=$nameBase64$tokenParam';
 
-      _socket = await _tryConnect(url);
+      AppLogger.i('Samsung: Connecting to $url');
+      _socket = await WebSocket.connect(url).timeout(AppConstants.connectTimeout);
 
       _socket!.listen(
         (dynamic data) {
@@ -125,8 +119,6 @@ class SamsungTizenDriver implements TvDriver {
     try {
       final msg = jsonDecode(data.toString());
       final event = msg['event'];
-
-      // Token can arrive in connect event
       if (event == 'ms.channel.connect') {
         final token = msg['data']?['token'];
         if (token is String && token.isNotEmpty && token != _token) {
@@ -167,10 +159,7 @@ class SamsungTizenDriver implements TvDriver {
   }
 
   void _scheduleReconnect() {
-    if (_reconnectAttempts >= AppConstants.maxReconnectAttempts) {
-      AppLogger.w('Samsung: Max reconnect attempts reached');
-      return;
-    }
+    if (_reconnectAttempts >= AppConstants.maxReconnectAttempts) return;
     _reconnectAttempts++;
     Future.delayed(AppConstants.reconnectDelay, () async {
       try {
