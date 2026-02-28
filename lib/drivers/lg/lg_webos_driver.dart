@@ -1,5 +1,3 @@
-// lib/drivers/lg/lg_webos_driver.dart
-
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -37,6 +35,9 @@ class LgWebOsDriver implements TvDriver {
   @override
   Stream<DriverState> get stateStream => _stateController.stream;
 
+  @override
+  bool get isConnected => _state == DriverState.connected;
+
   void _setState(DriverState s) {
     _state = s;
     _stateController.add(s);
@@ -63,7 +64,6 @@ class LgWebOsDriver implements TvDriver {
   Future<void> connect() async {
     try {
       _setState(DriverState.connecting);
-
       await _loadClientKey();
 
       final url = 'ws://$ipAddress:${AppConstants.lgWebOsPort}';
@@ -87,14 +87,16 @@ class LgWebOsDriver implements TvDriver {
         },
       );
 
-      // Register/pair: TV should prompt only first time if client-key reused.
+      // IMPORTANT: mark connected NOW so _sendRaw can send register/requests
+      _setState(DriverState.connected);
+
+      // Register (pairing). TV will prompt only first time if client-key is reused.
       await _sendRegistration();
 
-      // Request pointer socket for navigation buttons.
+      // Ask for pointer socket (needed for arrows / enter / home / back)
       await _requestPointerSocket();
 
       _reconnectAttempts = 0;
-      _setState(DriverState.connected);
       AppLogger.i('LG: Connected');
     } on TimeoutException {
       _setState(DriverState.error);
@@ -202,16 +204,26 @@ class LgWebOsDriver implements TvDriver {
 
   Future<void> _sendRaw(Map<String, dynamic> payload) async {
     if (_ssapSocket == null) return;
-    _ssapSocket!.add(jsonEncode(payload));
+    try {
+      _ssapSocket!.add(jsonEncode(payload));
+    } catch (e) {
+      AppLogger.e('LG send error', e);
+    }
   }
 
+  // IMPORTANT: Pointer socket expects TEXT messages, not JSON.
   Future<void> _sendPointerButton(String name) async {
     if (_pointerSocket == null) {
+      // pointer not ready, request again
       await _requestPointerSocket();
-      AppLogger.w('LG: Pointer socket not ready yet');
+      AppLogger.w('LG: Pointer socket not ready');
       return;
     }
-    _pointerSocket!.add(jsonEncode({'type': 'button', 'name': name}));
+    try {
+      _pointerSocket!.add('type:button\nname:$name\n\n');
+    } catch (e) {
+      AppLogger.e('LG pointer send error', e);
+    }
   }
 
   @override
@@ -219,13 +231,11 @@ class LgWebOsDriver implements TvDriver {
     if (!isConnected) throw const DriverException('Not connected');
 
     try {
-      final id = 'cmd_${++_messageId}';
-
       switch (command) {
-        // OFF works via SSAP. ON usually needs Wake-on-LAN (not SSAP).
         case TvCommand.power:
+          // OFF only via network. ON requires Wake-on-LAN (explained below).
           await _sendRaw({
-            'id': id,
+            'id': 'cmd_${++_messageId}',
             'type': 'request',
             'uri': 'ssap://system/turnOff',
             'payload': {},
@@ -233,23 +243,48 @@ class LgWebOsDriver implements TvDriver {
           break;
 
         case TvCommand.volumeUp:
-          await _sendRaw({'id': id, 'type': 'request', 'uri': 'ssap://audio/volumeUp', 'payload': {}});
+          await _sendRaw({
+            'id': 'cmd_${++_messageId}',
+            'type': 'request',
+            'uri': 'ssap://audio/volumeUp',
+            'payload': {},
+          });
           break;
 
         case TvCommand.volumeDown:
-          await _sendRaw({'id': id, 'type': 'request', 'uri': 'ssap://audio/volumeDown', 'payload': {}});
+          await _sendRaw({
+            'id': 'cmd_${++_messageId}',
+            'type': 'request',
+            'uri': 'ssap://audio/volumeDown',
+            'payload': {},
+          });
           break;
 
         case TvCommand.mute:
-          await _sendRaw({'id': id, 'type': 'request', 'uri': 'ssap://audio/setMute', 'payload': {'mute': true}});
+          await _sendRaw({
+            'id': 'cmd_${++_messageId}',
+            'type': 'request',
+            'uri': 'ssap://audio/setMute',
+            'payload': {'mute': true},
+          });
           break;
 
         case TvCommand.channelUp:
-          await _sendRaw({'id': id, 'type': 'request', 'uri': 'ssap://tv/channelUp', 'payload': {}});
+          await _sendRaw({
+            'id': 'cmd_${++_messageId}',
+            'type': 'request',
+            'uri': 'ssap://tv/channelUp',
+            'payload': {},
+          });
           break;
 
         case TvCommand.channelDown:
-          await _sendRaw({'id': id, 'type': 'request', 'uri': 'ssap://tv/channelDown', 'payload': {}});
+          await _sendRaw({
+            'id': 'cmd_${++_messageId}',
+            'type': 'request',
+            'uri': 'ssap://tv/channelDown',
+            'payload': {},
+          });
           break;
 
         // Navigation via pointer socket
