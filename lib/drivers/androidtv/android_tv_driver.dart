@@ -91,7 +91,9 @@ class AndroidTvDriver implements TvDriver {
       throw ConnectionException('AndroidTV connect failed: $e');
     }
   }
-
+@override
+bool get isConnected => _state == DriverState.connected; 
+  
   @override
   Future<void> sendCommand(TvCommand command) async {
     if (!isConnected) throw const DriverException('Not connected');
