@@ -10,11 +10,11 @@ import '../../core/utils/app_logger.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/error/exceptions.dart';
 
-class LgWebOsDriver extends TvDriver {
+class LgWebOsDriver implements TvDriver {
   final String ipAddress;
 
-  WebSocket? _ssapSocket;
-  WebSocket? _pointerSocket;
+  WebSocket? _ssapSocket;     // SSAP: register + requests
+  WebSocket? _pointerSocket;  // pointer input socket
 
   final StreamController<DriverState> _stateController =
       StreamController<DriverState>.broadcast();
@@ -44,8 +44,9 @@ class LgWebOsDriver extends TvDriver {
 
   Future<void> _loadClientKey() async {
     final prefs = await SharedPreferences.getInstance();
-    _clientKey = prefs.getString(_prefsKeyClientKey);
-    if (_clientKey != null && _clientKey!.isNotEmpty) {
+    final key = prefs.getString(_prefsKeyClientKey);
+    if (key != null && key.isNotEmpty) {
+      _clientKey = key;
       AppLogger.i('LG: Loaded saved client-key');
     }
   }
@@ -64,10 +65,9 @@ class LgWebOsDriver extends TvDriver {
       await _loadClientKey();
 
       final url = 'ws://$ipAddress:${AppConstants.lgWebOsPort}';
-      AppLogger.i('LG: Connecting to $url');
+      AppLogger.i('LG: Connecting SSAP: $url');
 
-      _ssapSocket = await WebSocket.connect(url)
-          .timeout(AppConstants.connectTimeout);
+      _ssapSocket = await WebSocket.connect(url).timeout(AppConstants.connectTimeout);
 
       _ssapSocket!.listen(
         (data) async {
@@ -75,17 +75,20 @@ class LgWebOsDriver extends TvDriver {
           await _handleMessage(data);
         },
         onError: (Object e) {
-          AppLogger.e('LG WebSocket error', e);
+          AppLogger.e('LG SSAP error', e);
           _setState(DriverState.error);
           _scheduleReconnect();
         },
         onDone: () {
-          AppLogger.w('LG WebSocket closed');
+          AppLogger.w('LG SSAP closed');
           _setState(DriverState.disconnected);
         },
       );
 
+      // 1) Register => TV prompt (first time only if client-key reused)
       await _sendRegistration();
+
+      // 2) Request pointer socket
       await _requestPointerSocket();
 
       _reconnectAttempts = 0;
@@ -106,15 +109,17 @@ class LgWebOsDriver extends TvDriver {
       final msg = jsonDecode(data.toString()) as Map<String, dynamic>;
       final type = msg['type'];
 
+      // Save client-key after successful pairing
       if (type == 'registered') {
         final payload = msg['payload'];
         final key = (payload is Map) ? payload['client-key'] : null;
         if (key is String && key.isNotEmpty) {
-          await _saveClientKey(key);
+          if (key != _clientKey) await _saveClientKey(key);
         }
         return;
       }
 
+      // Pointer socket response
       final uri = msg['uri'];
       if (uri == 'ssap://com.webos.service.networkinput/getPointerInputSocket') {
         final payload = msg['payload'];
@@ -175,6 +180,7 @@ class LgWebOsDriver extends TvDriver {
   Future<void> _connectPointerSocket() async {
     if (_pointerPath == null || _pointerPath!.isEmpty) return;
 
+    // Usually socketPath is like: "/some/path"
     final url = _pointerPath!.startsWith('ws://')
         ? _pointerPath!
         : 'ws://$ipAddress:${AppConstants.lgWebOsPort}${_pointerPath!}';
@@ -184,13 +190,12 @@ class LgWebOsDriver extends TvDriver {
     } catch (_) {}
 
     AppLogger.i('LG: Connecting pointer socket: $url');
-    _pointerSocket = await WebSocket.connect(url)
-        .timeout(AppConstants.connectTimeout);
+    _pointerSocket = await WebSocket.connect(url).timeout(AppConstants.connectTimeout);
 
     _pointerSocket!.listen(
       (data) => AppLogger.d('LG PTR RX: $data'),
-      onError: (e) => AppLogger.e('LG Pointer socket error', e),
-      onDone: () => AppLogger.w('LG Pointer socket closed'),
+      onError: (e) => AppLogger.e('LG pointer error', e),
+      onDone: () => AppLogger.w('LG pointer closed'),
     );
   }
 
@@ -199,13 +204,16 @@ class LgWebOsDriver extends TvDriver {
     _ssapSocket!.add(jsonEncode(payload));
   }
 
+  // IMPORTANT: LG pointer socket uses TEXT commands (NOT JSON)
   Future<void> _sendPointerButton(String name) async {
     if (_pointerSocket == null) {
       await _requestPointerSocket();
       AppLogger.w('LG: Pointer socket not ready yet');
       return;
     }
-    _pointerSocket!.add(jsonEncode({'type': 'button', 'name': name}));
+    // Expected format: "type:button\nname:UP\n\n"
+    final msg = 'type:button\nname:$name\n\n';
+    _pointerSocket!.add(msg);
   }
 
   @override
@@ -215,6 +223,7 @@ class LgWebOsDriver extends TvDriver {
     try {
       switch (command) {
         case TvCommand.power:
+          // Power OFF only (Power ON needs Wake-on-LAN)
           await _sendRaw({
             'id': 'cmd_${++_messageId}',
             'type': 'request',
@@ -242,6 +251,7 @@ class LgWebOsDriver extends TvDriver {
           break;
 
         case TvCommand.mute:
+          // toggle is better, but keep as true if you want fixed mute
           await _sendRaw({
             'id': 'cmd_${++_messageId}',
             'type': 'request',
@@ -268,6 +278,7 @@ class LgWebOsDriver extends TvDriver {
           });
           break;
 
+        // D-Pad via pointer socket
         case TvCommand.up:
           await _sendPointerButton('UP');
           break;
@@ -317,6 +328,7 @@ class LgWebOsDriver extends TvDriver {
     } finally {
       _pointerSocket = null;
       _ssapSocket = null;
+      _pointerPath = null;
       _setState(DriverState.disconnected);
     }
   }
