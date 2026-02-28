@@ -8,40 +8,17 @@ import '../providers/device_provider.dart';
 import '../widgets/remote_button.dart';
 import '../widgets/dpad_widget.dart';
 import '../widgets/ad_banner_widget.dart';
-import '../../core/network/wol.dart';
 
-class RemoteControlScreen extends StatefulWidget {
+class RemoteControlScreen extends StatelessWidget {
   const RemoteControlScreen({super.key});
 
-  @override
-  State<RemoteControlScreen> createState() => _RemoteControlScreenState();
-}
-
-class _RemoteControlScreenState extends State<RemoteControlScreen> {
   static const _accent = Color(0xFF6C63FF);
   static const _bg = Color(0xFF12121F);
-
-  final TextEditingController _macController = TextEditingController();
-  bool _macInitialized = false;
-
-  @override
-  void dispose() {
-    _macController.dispose();
-    super.dispose();
-  }
-
-  void _initMacOnce(DeviceProvider provider) {
-    if (_macInitialized) return;
-    _macController.text = provider.macAddress ?? '';
-    _macInitialized = true;
-  }
 
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<DeviceProvider>();
     final device = provider.selectedDevice;
-
-    _initMacOnce(provider);
 
     return Scaffold(
       backgroundColor: _bg,
@@ -75,46 +52,41 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
           children: [
             Expanded(
               child: SingleChildScrollView(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
                 child: Column(
                   children: [
-                    // Power
+                    // Power (الزرار الأحمر فقط)
                     _buildPowerButton(provider),
-                    const SizedBox(height: 14),
+                    const SizedBox(height: 28),
 
-                    // ✅ MAC (Wake-on-LAN) box
-                    _buildMacBox(context, provider),
-
-                    const SizedBox(height: 22),
-                    // Volume + Channel side by side
+                    // Volume + Channel
                     _buildVolumeChannelRow(provider),
                     const SizedBox(height: 28),
+
                     // D-Pad
                     DPadWidget(onCommand: (cmd) => provider.sendCommand(cmd)),
                     const SizedBox(height: 28),
+
                     // Home / Back / Mute row
                     _buildBottomRow(provider),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 24),
 
-                    // Error message (if any)
-                    if (provider.errorMessage != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(
-                          provider.errorMessage!,
-                          style: const TextStyle(
-                            color: Color(0xFFFF6584),
-                            fontSize: 12,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
+                    // Signature (حل سريع داخل شاشة الريموت)
+                    const Text(
+                      'by: Mohamed Elshref',
+                      style: TextStyle(
+                        color: Color(0xFF9090B0),
+                        fontSize: 10,
+                        letterSpacing: 0.5,
                       ),
+                    ),
+                    const SizedBox(height: 8),
                   ],
                 ),
               ),
             ),
-            // AdMob banner at the very bottom
+
+            // AdMob banner
             const AdBannerWidget(),
           ],
         ),
@@ -130,125 +102,6 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
         onTap: () => provider.sendCommand(TvCommand.power),
         child: const Icon(Icons.power_settings_new_rounded,
             color: Colors.white, size: 32),
-      ),
-    );
-  }
-
-  Widget _buildMacBox(BuildContext context, DeviceProvider provider) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1A1A2E),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Power ON (Wake-on-LAN)',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 6),
-          const Text(
-            'Enter TV MAC once (example: AA:BB:CC:DD:EE:FF). Needed to turn ON when TV is OFF.',
-            style: TextStyle(
-              color: Color(0xFF9090B0),
-              fontSize: 11,
-            ),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _macController,
-            style: const TextStyle(color: Colors.white),
-            decoration: InputDecoration(
-              hintText: 'AA:BB:CC:DD:EE:FF',
-              hintStyle: const TextStyle(color: Colors.white38),
-              filled: true,
-              fillColor: const Color(0xFF12121F),
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide.none,
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _accent,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  onPressed: () async {
-                    final mac = _macController.text.trim();
-                    await provider.setMacAddress(mac);
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('MAC saved')),
-                      );
-                    }
-                  },
-                  child: const Text('Save MAC'),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: OutlinedButton(
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.white,
-                    side: const BorderSide(color: Colors.white24),
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  onPressed: () async {
-                    final mac = _macController.text.trim();
-                    if (mac.isEmpty) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Enter MAC first')),
-                      );
-                      return;
-                    }
-                    try {
-                      await WakeOnLan.wake(macAddress: mac);
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Wake packet sent')),
-                        );
-                      }
-                    } catch (e) {
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('WOL failed: $e')),
-                        );
-                      }
-                    }
-                  },
-                  child: const Text('Test Wake'),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          if ((provider.macAddress ?? '').isEmpty)
-            const Text(
-              'MAC not saved yet. Power ON won’t work when TV is OFF.',
-              style: TextStyle(color: Color(0xFFFFB347), fontSize: 11),
-            ),
-        ],
       ),
     );
   }
