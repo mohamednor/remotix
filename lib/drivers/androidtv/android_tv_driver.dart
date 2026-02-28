@@ -1,3 +1,5 @@
+// lib/drivers/androidtv/android_tv_driver.dart
+
 import 'dart:async';
 import 'dart:io';
 
@@ -25,14 +27,13 @@ class AndroidTvDriver implements TvDriver {
   @override
   Stream<DriverState> get stateStream => _stateController.stream;
 
-  @override
-  bool get isConnected => _state == DriverState.connected;
-
   void _setState(DriverState s) {
     _state = s;
     _stateController.add(s);
   }
 
+  // NOTE: ده مش ADB حقيقي. مجرد TCP Socket مش هيشتغل للتحكم في Android TV
+  // إلا لو أنت عامل سيرفر على التلفزيون يستقبل أوامر "input keyevent".
   static const Map<TvCommand, int> _keycodeMap = {
     TvCommand.power: 26,
     TvCommand.volumeUp: 24,
@@ -93,6 +94,7 @@ class AndroidTvDriver implements TvDriver {
   @override
   Future<void> sendCommand(TvCommand command) async {
     if (!isConnected) throw const DriverException('Not connected');
+
     final keycode = _keycodeMap[command];
     if (keycode == null) return;
 
@@ -122,7 +124,8 @@ class AndroidTvDriver implements TvDriver {
   Future<void> disconnect() async {
     try {
       await _socket?.close();
-    } catch (_) {
+    } catch (e) {
+      AppLogger.e('AndroidTV disconnect error', e);
     } finally {
       _setState(DriverState.disconnected);
       AppLogger.i('AndroidTV: Disconnected');
