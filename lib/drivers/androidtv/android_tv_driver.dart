@@ -1,5 +1,3 @@
-// lib/drivers/androidtv/android_tv_driver.dart
-
 import 'dart:async';
 import 'dart:io';
 
@@ -9,7 +7,7 @@ import '../../core/utils/app_logger.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/error/exceptions.dart';
 
-class AndroidTvDriver implements TvDriver {
+class AndroidTvDriver extends TvDriver {
   final String ipAddress;
   Socket? _socket;
   int _reconnectAttempts = 0;
@@ -32,8 +30,6 @@ class AndroidTvDriver implements TvDriver {
     _stateController.add(s);
   }
 
-  // NOTE: ده مش ADB حقيقي. مجرد TCP Socket مش هيشتغل للتحكم في Android TV
-  // إلا لو أنت عامل سيرفر على التلفزيون يستقبل أوامر "input keyevent".
   static const Map<TvCommand, int> _keycodeMap = {
     TvCommand.power: 26,
     TvCommand.volumeUp: 24,
@@ -55,39 +51,20 @@ class AndroidTvDriver implements TvDriver {
     try {
       _setState(DriverState.connecting);
       AppLogger.i('AndroidTV: Connecting to $ipAddress:${AppConstants.androidTvPort}');
-
       _socket = await Socket.connect(
         ipAddress,
         AppConstants.androidTvPort,
         timeout: AppConstants.connectTimeout,
       );
-
       _setState(DriverState.connected);
       _reconnectAttempts = 0;
-      AppLogger.i('AndroidTV: Connected successfully');
-
-      _socket!.listen(
-        (data) => AppLogger.d('AndroidTV RX: ${data.length} bytes'),
-        onError: (e) {
-          AppLogger.e('AndroidTV socket error', e);
-          _setState(DriverState.error);
-          _scheduleReconnect();
-        },
-        onDone: () {
-          AppLogger.w('AndroidTV socket closed');
-          _setState(DriverState.disconnected);
-        },
-      );
+      AppLogger.i('AndroidTV: Connected');
     } on SocketException catch (e) {
       _setState(DriverState.error);
       throw ConnectionException('AndroidTV connection failed: ${e.message}');
     } on TimeoutException {
       _setState(DriverState.error);
       throw const ConnectionException('AndroidTV connection timed out');
-    } catch (e, st) {
-      _setState(DriverState.error);
-      AppLogger.e('AndroidTV connect failed', e, st);
-      throw ConnectionException('AndroidTV connect failed: $e');
     }
   }
 
@@ -99,10 +76,11 @@ class AndroidTvDriver implements TvDriver {
     if (keycode == null) return;
 
     try {
+      // Build-safe فقط
       final cmd = 'input keyevent $keycode\n';
       _socket!.write(cmd);
       await _socket!.flush();
-      AppLogger.d('AndroidTV: Sent $command -> KEYCODE $keycode');
+      AppLogger.d('AndroidTV: Sent $command -> $keycode');
     } catch (e, st) {
       AppLogger.e('AndroidTV sendCommand error', e, st);
     }
@@ -124,11 +102,11 @@ class AndroidTvDriver implements TvDriver {
   Future<void> disconnect() async {
     try {
       await _socket?.close();
-    } catch (e) {
-      AppLogger.e('AndroidTV disconnect error', e);
+    } catch (_) {
+      // ignore
     } finally {
+      _socket = null;
       _setState(DriverState.disconnected);
-      AppLogger.i('AndroidTV: Disconnected');
     }
   }
 }
