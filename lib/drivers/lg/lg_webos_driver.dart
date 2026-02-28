@@ -1,3 +1,5 @@
+// lib/drivers/lg/lg_webos_driver.dart
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -13,8 +15,8 @@ import '../../core/error/exceptions.dart';
 class LgWebOsDriver implements TvDriver {
   final String ipAddress;
 
-  WebSocket? _ssapSocket;     // register + requests
-  WebSocket? _pointerSocket;  // navigation buttons
+  WebSocket? _ssapSocket;     // main SSAP ws (register + requests)
+  WebSocket? _pointerSocket;  // pointer input ws
 
   final StreamController<DriverState> _stateController =
       StreamController<DriverState>.broadcast();
@@ -61,6 +63,7 @@ class LgWebOsDriver implements TvDriver {
   Future<void> connect() async {
     try {
       _setState(DriverState.connecting);
+
       await _loadClientKey();
 
       final url = 'ws://$ipAddress:${AppConstants.lgWebOsPort}';
@@ -84,14 +87,15 @@ class LgWebOsDriver implements TvDriver {
         },
       );
 
-      // مهم: نخلي الحالة Connected قبل ما نبعت register
-      _setState(DriverState.connected);
-
+      // Register/pair: TV should prompt only first time if client-key reused.
       await _sendRegistration();
+
+      // Request pointer socket for navigation buttons.
       await _requestPointerSocket();
 
       _reconnectAttempts = 0;
-      AppLogger.i('LG: Connected (registered + requested pointer socket)');
+      _setState(DriverState.connected);
+      AppLogger.i('LG: Connected');
     } on TimeoutException {
       _setState(DriverState.error);
       throw const ConnectionException('LG connection timed out');
@@ -107,17 +111,17 @@ class LgWebOsDriver implements TvDriver {
       final msg = jsonDecode(data.toString()) as Map<String, dynamic>;
       final type = msg['type'];
 
-      // pairing success -> save client-key
+      // Pairing success => store client-key
       if (type == 'registered') {
         final payload = msg['payload'];
         final key = (payload is Map) ? payload['client-key'] : null;
-        if (key is String && key.isNotEmpty && key != _clientKey) {
+        if (key is String && key.isNotEmpty) {
           await _saveClientKey(key);
         }
         return;
       }
 
-      // pointer socket response
+      // Pointer socket response
       final uri = msg['uri'];
       if (uri == 'ssap://com.webos.service.networkinput/getPointerInputSocket') {
         final payload = msg['payload'];
@@ -129,7 +133,7 @@ class LgWebOsDriver implements TvDriver {
         }
       }
     } catch (_) {
-      // ignore
+      // ignore parse errors
     }
   }
 
@@ -197,7 +201,7 @@ class LgWebOsDriver implements TvDriver {
   }
 
   Future<void> _sendRaw(Map<String, dynamic> payload) async {
-    if (_ssapSocket == null || _state != DriverState.connected) return;
+    if (_ssapSocket == null) return;
     _ssapSocket!.add(jsonEncode(payload));
   }
 
@@ -215,11 +219,13 @@ class LgWebOsDriver implements TvDriver {
     if (!isConnected) throw const DriverException('Not connected');
 
     try {
+      final id = 'cmd_${++_messageId}';
+
       switch (command) {
+        // OFF works via SSAP. ON usually needs Wake-on-LAN (not SSAP).
         case TvCommand.power:
-          // OFF شغال. ON غالباً يحتاج Wake-on-LAN
           await _sendRaw({
-            'id': 'cmd_${++_messageId}',
+            'id': id,
             'type': 'request',
             'uri': 'ssap://system/turnOff',
             'payload': {},
@@ -227,48 +233,23 @@ class LgWebOsDriver implements TvDriver {
           break;
 
         case TvCommand.volumeUp:
-          await _sendRaw({
-            'id': 'cmd_${++_messageId}',
-            'type': 'request',
-            'uri': 'ssap://audio/volumeUp',
-            'payload': {},
-          });
+          await _sendRaw({'id': id, 'type': 'request', 'uri': 'ssap://audio/volumeUp', 'payload': {}});
           break;
 
         case TvCommand.volumeDown:
-          await _sendRaw({
-            'id': 'cmd_${++_messageId}',
-            'type': 'request',
-            'uri': 'ssap://audio/volumeDown',
-            'payload': {},
-          });
+          await _sendRaw({'id': id, 'type': 'request', 'uri': 'ssap://audio/volumeDown', 'payload': {}});
           break;
 
         case TvCommand.mute:
-          await _sendRaw({
-            'id': 'cmd_${++_messageId}',
-            'type': 'request',
-            'uri': 'ssap://audio/setMute',
-            'payload': {'mute': true},
-          });
+          await _sendRaw({'id': id, 'type': 'request', 'uri': 'ssap://audio/setMute', 'payload': {'mute': true}});
           break;
 
         case TvCommand.channelUp:
-          await _sendRaw({
-            'id': 'cmd_${++_messageId}',
-            'type': 'request',
-            'uri': 'ssap://tv/channelUp',
-            'payload': {},
-          });
+          await _sendRaw({'id': id, 'type': 'request', 'uri': 'ssap://tv/channelUp', 'payload': {}});
           break;
 
         case TvCommand.channelDown:
-          await _sendRaw({
-            'id': 'cmd_${++_messageId}',
-            'type': 'request',
-            'uri': 'ssap://tv/channelDown',
-            'payload': {},
-          });
+          await _sendRaw({'id': id, 'type': 'request', 'uri': 'ssap://tv/channelDown', 'payload': {}});
           break;
 
         // Navigation via pointer socket
@@ -322,7 +303,6 @@ class LgWebOsDriver implements TvDriver {
       _pointerSocket = null;
       _ssapSocket = null;
       _setState(DriverState.disconnected);
-      AppLogger.i('LG: Disconnected');
     }
   }
 }
