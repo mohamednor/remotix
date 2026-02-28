@@ -10,5 +10,6 @@ abstract class TvDriver {
   Future<void> sendCommand(TvCommand command);
   Future<void> disconnect();
 
-  bool get isConnected => state == DriverState.connected;
+  // مهم: علشان ما يطلعش Error "missing implementations"
+  bool get isConnected;
 }
