@@ -9,7 +9,7 @@ import '../../core/utils/app_logger.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/error/exceptions.dart';
 
-class LgWebOsDriver implements TvDriver {
+class LgWebOsDriver extends TvDriver {
   final String ipAddress;
   WebSocket? _socket;
   int _messageId = 0;
