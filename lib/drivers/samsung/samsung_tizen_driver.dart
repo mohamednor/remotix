@@ -145,7 +145,8 @@ class SamsungTizenDriver implements TvDriver {
       // ignore
     }
   }
-
+  @override
+bool get isConnected => _state == DriverState.connected;
   @override
   Future<void> sendCommand(TvCommand command) async {
     // ✅ If TV is OFF (not connected) and user presses Power -> try Wake-on-LAN
