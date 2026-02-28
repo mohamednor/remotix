@@ -1,3 +1,5 @@
+// lib/drivers/base/driver_factory.dart
+
 import '../../domain/entities/device.dart';
 import 'tv_driver.dart';
 
@@ -9,7 +11,9 @@ import '../../core/utils/app_logger.dart';
 
 class DriverFactory {
   static TvDriver create(Device device) {
-    AppLogger.i('DriverFactory: Creating driver for ${device.typeLabel} @ ${device.ipAddress}');
+    AppLogger.i(
+      'DriverFactory: Creating driver for ${device.typeLabel} @ ${device.ipAddress}',
+    );
 
     switch (device.type) {
       case DeviceType.lgWebOs:
@@ -23,7 +27,7 @@ class DriverFactory {
 
       case DeviceType.unknown:
       default:
-        // fallback
+        // الأفضل نخلي unknown = Samsung فقط مؤقتًا
         return SamsungTizenDriver(device.ipAddress);
     }
   }
