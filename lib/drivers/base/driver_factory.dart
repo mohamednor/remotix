@@ -9,8 +9,7 @@ import '../../core/utils/app_logger.dart';
 
 class DriverFactory {
   static TvDriver create(Device device) {
-    AppLogger.i(
-        'DriverFactory: Creating driver for ${device.typeLabel} @ ${device.ipAddress}');
+    AppLogger.i('DriverFactory: Creating driver for ${device.typeLabel} @ ${device.ipAddress}');
 
     switch (device.type) {
       case DeviceType.lgWebOs:
@@ -23,7 +22,8 @@ class DriverFactory {
         return AndroidTvDriver(device.ipAddress);
 
       case DeviceType.unknown:
-        // الافتراضي: نجرب سامسونج WebSocket (مش مضمون)
+      default:
+        // fallback
         return SamsungTizenDriver(device.ipAddress);
     }
   }
