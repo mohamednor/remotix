@@ -2,6 +2,8 @@
 
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 import '../../domain/entities/device.dart';
 import '../../domain/entities/tv_command.dart';
 import '../../domain/usecases/discover_devices_usecase.dart';
@@ -22,22 +24,37 @@ class DeviceProvider extends ChangeNotifier {
   String? _errorMessage;
   StreamSubscription<DriverState>? _driverStateSub;
 
+  // ✅ للـ Android TV / WOL etc (لو عندك UI بيطلب MAC)
+  String? _macAddress;
+
   DeviceProvider(this._discoverUseCase);
 
-String? _macAddress;
-String? get macAddress => _macAddress;
-
-  void setMacAddress(String? mac) {
-  _macAddress = mac;
-  notifyListeners();
-}
-  
   ScanState get scanState => _scanState;
   List<Device> get devices => List.unmodifiable(_devices);
   Device? get selectedDevice => _selectedDevice;
   DriverState get driverState => _driverState;
   String? get errorMessage => _errorMessage;
   bool get isConnected => _driverState == DriverState.connected;
+
+  String? get macAddress => _macAddress;
+
+  String _macPrefsKey(String ip) => 'device_mac_$ip';
+
+  Future<void> loadSavedMacIfAny(Device device) async {
+    final prefs = await SharedPreferences.getInstance();
+    _macAddress = prefs.getString(_macPrefsKey(device.ipAddress));
+    notifyListeners();
+  }
+
+  // ✅ خليها Future عشان await مايكسرش
+  Future<void> setMacAddress(String mac) async {
+    _macAddress = mac.trim();
+    if (_selectedDevice != null) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_macPrefsKey(_selectedDevice!.ipAddress), _macAddress!);
+    }
+    notifyListeners();
+  }
 
   Future<void> scanDevices() async {
     _scanState = ScanState.scanning;
@@ -60,10 +77,13 @@ String? get macAddress => _macAddress;
 
   Future<void> selectDevice(Device device) async {
     await _driver?.disconnect();
-    _driverStateSub?.cancel();
+    await _driverStateSub?.cancel();
 
     _selectedDevice = device;
     _driver = DriverFactory.create(device);
+
+    // load saved mac (لو عندك شاشة بتستخدمها)
+    await loadSavedMacIfAny(device);
 
     _driverStateSub = _driver!.stateStream.listen((state) {
       _driverState = state;
