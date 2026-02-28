@@ -10,15 +10,15 @@ import '../../core/utils/app_logger.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/error/exceptions.dart';
 
-class SamsungTizenDriver extends TvDriver {
+class SamsungTizenDriver implements TvDriver {
   final String ipAddress;
   WebSocket? _socket;
-  int _reconnectAttempts = 0;
 
   final StreamController<DriverState> _stateController =
       StreamController<DriverState>.broadcast();
 
   DriverState _state = DriverState.disconnected;
+  int _reconnectAttempts = 0;
 
   String? _token;
 
@@ -38,7 +38,7 @@ class SamsungTizenDriver extends TvDriver {
   String get _prefsTokenKey => 'samsung_tizen_token_$ipAddress';
 
   static const Map<TvCommand, String> _keyMap = {
-    TvCommand.power: 'KEY_POWER',
+    TvCommand.power: 'KEY_POWER', // usually power off only
     TvCommand.volumeUp: 'KEY_VOLUP',
     TvCommand.volumeDown: 'KEY_VOLDOWN',
     TvCommand.mute: 'KEY_MUTE',
@@ -55,8 +55,9 @@ class SamsungTizenDriver extends TvDriver {
 
   Future<void> _loadToken() async {
     final prefs = await SharedPreferences.getInstance();
-    _token = prefs.getString(_prefsTokenKey);
-    if (_token != null && _token!.isNotEmpty) {
+    final t = prefs.getString(_prefsTokenKey);
+    if (t != null && t.isNotEmpty) {
+      _token = t;
       AppLogger.i('Samsung: Loaded token');
     }
   }
@@ -76,14 +77,14 @@ class SamsungTizenDriver extends TvDriver {
 
       final appName = 'Remotix';
       final nameBase64 = base64Encode(utf8.encode(appName));
-      final tokenParam =
-          (_token != null && _token!.isNotEmpty) ? '&token=$_token' : '';
+      final tokenParam = (_token != null && _token!.isNotEmpty) ? '&token=$_token' : '';
 
       final url =
           'ws://$ipAddress:${AppConstants.samsungTizenPort}'
           '/api/v2/channels/samsung.remote.control?name=$nameBase64$tokenParam';
 
-      AppLogger.i('Samsung: Connecting to $url');
+      AppLogger.i('Samsung: Connecting $url');
+
       _socket = await WebSocket.connect(url).timeout(AppConstants.connectTimeout);
 
       _socket!.listen(
@@ -119,6 +120,7 @@ class SamsungTizenDriver extends TvDriver {
     try {
       final msg = jsonDecode(data.toString());
       final event = msg['event'];
+
       if (event == 'ms.channel.connect') {
         final token = msg['data']?['token'];
         if (token is String && token.isNotEmpty && token != _token) {
@@ -135,10 +137,7 @@ class SamsungTizenDriver extends TvDriver {
     if (!isConnected) throw const DriverException('Not connected');
 
     final key = _keyMap[command];
-    if (key == null) {
-      AppLogger.w('Samsung: No key mapping for $command');
-      return;
-    }
+    if (key == null) return;
 
     try {
       final payload = jsonEncode({
@@ -177,8 +176,8 @@ class SamsungTizenDriver extends TvDriver {
     } catch (_) {
       // ignore
     } finally {
+      _socket = null;
       _setState(DriverState.disconnected);
-      AppLogger.i('Samsung: Disconnected');
     }
   }
 }
