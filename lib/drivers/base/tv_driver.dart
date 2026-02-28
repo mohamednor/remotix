@@ -1,5 +1,3 @@
-// lib/drivers/base/tv_driver.dart
-
 import '../../domain/entities/tv_command.dart';
 
 enum DriverState { disconnected, connecting, connected, error }
