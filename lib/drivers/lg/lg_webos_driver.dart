@@ -69,6 +69,9 @@ class LgWebOsDriver implements TvDriver {
 
       _ssapSocket = await WebSocket.connect(url).timeout(AppConstants.connectTimeout);
 
+      // مهم: نخلي الحالة Connected بدري عشان نقدر نبعت registration
+      _setState(DriverState.connected);
+
       _ssapSocket!.listen(
         (data) async {
           AppLogger.d('LG RX: $data');
@@ -85,15 +88,14 @@ class LgWebOsDriver implements TvDriver {
         },
       );
 
-      // Register (pairing). TV will prompt only first time if client-key is reused.
+      // Register / Pairing (الموافقة هتظهر أول مرة فقط لو client-key محفوظ)
       await _sendRegistration();
 
-      // Request pointer socket once. Needed for arrows/OK/BACK/HOME.
+      // Request pointer socket (ضروري للأزرار الاتجاهات/OK/Back/Home)
       await _requestPointerSocket();
 
       _reconnectAttempts = 0;
-      _setState(DriverState.connected);
-      AppLogger.i('LG: Connected (waiting pointer socket if needed)');
+      AppLogger.i('LG: Connected and requested pointer socket');
     } on TimeoutException {
       _setState(DriverState.error);
       throw const ConnectionException('LG connection timed out');
@@ -180,7 +182,6 @@ class LgWebOsDriver implements TvDriver {
   Future<void> _connectPointerSocket() async {
     if (_pointerPath == null || _pointerPath!.isEmpty) return;
 
-    // Some TVs return socketPath starting with "/"
     final url = _pointerPath!.startsWith('ws://')
         ? _pointerPath!
         : 'ws://$ipAddress:${AppConstants.lgWebOsPort}${_pointerPath!}';
@@ -200,15 +201,18 @@ class LgWebOsDriver implements TvDriver {
   }
 
   Future<void> _sendRaw(Map<String, dynamic> payload) async {
-    if (_ssapSocket == null || _state != DriverState.connected) return;
-    _ssapSocket!.add(jsonEncode(payload));
+    if (_ssapSocket == null) return;
+    try {
+      _ssapSocket!.add(jsonEncode(payload));
+    } catch (e) {
+      AppLogger.e('LG send error', e);
+    }
   }
 
   Future<void> _sendPointerButton(String name) async {
     if (_pointerSocket == null) {
-      // Try to re-request if pointer not ready yet
       await _requestPointerSocket();
-      AppLogger.w('LG: Pointer socket not ready');
+      AppLogger.w('LG: Pointer socket not ready yet');
       return;
     }
     _pointerSocket!.add(jsonEncode({'type': 'button', 'name': name}));
@@ -220,7 +224,7 @@ class LgWebOsDriver implements TvDriver {
 
     try {
       switch (command) {
-        // NOTE: OFF works. ON usually needs Wake-on-LAN.
+        // مهم: OFF شغال، ON غالباً يحتاج Wake-on-LAN (هشرح تحت)
         case TvCommand.power:
           await _sendRaw({
             'id': 'cmd_${++_messageId}',
