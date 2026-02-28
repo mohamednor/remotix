@@ -1,8 +1,5 @@
-// lib/presentation/providers/device_provider.dart
-
 import 'dart:async';
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../domain/entities/device.dart';
 import '../../domain/entities/tv_command.dart';
@@ -24,8 +21,9 @@ class DeviceProvider extends ChangeNotifier {
   String? _errorMessage;
   StreamSubscription<DriverState>? _driverStateSub;
 
-  // ✅ للـ Android TV / WOL etc (لو عندك UI بيطلب MAC)
+  // Added to satisfy your UI errors (macAddress / setMacAddress)
   String? _macAddress;
+  String? get macAddress => _macAddress;
 
   DeviceProvider(this._discoverUseCase);
 
@@ -36,23 +34,8 @@ class DeviceProvider extends ChangeNotifier {
   String? get errorMessage => _errorMessage;
   bool get isConnected => _driverState == DriverState.connected;
 
-  String? get macAddress => _macAddress;
-
-  String _macPrefsKey(String ip) => 'device_mac_$ip';
-
-  Future<void> loadSavedMacIfAny(Device device) async {
-    final prefs = await SharedPreferences.getInstance();
-    _macAddress = prefs.getString(_macPrefsKey(device.ipAddress));
-    notifyListeners();
-  }
-
-  // ✅ خليها Future عشان await مايكسرش
-  Future<void> setMacAddress(String mac) async {
-    _macAddress = mac.trim();
-    if (_selectedDevice != null) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_macPrefsKey(_selectedDevice!.ipAddress), _macAddress!);
-    }
+  Future<void> setMacAddress(String? mac) async {
+    _macAddress = mac;
     notifyListeners();
   }
 
@@ -81,9 +64,6 @@ class DeviceProvider extends ChangeNotifier {
 
     _selectedDevice = device;
     _driver = DriverFactory.create(device);
-
-    // load saved mac (لو عندك شاشة بتستخدمها)
-    await loadSavedMacIfAny(device);
 
     _driverStateSub = _driver!.stateStream.listen((state) {
       _driverState = state;
