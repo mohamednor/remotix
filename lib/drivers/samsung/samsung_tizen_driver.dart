@@ -9,7 +9,7 @@ import '../../core/utils/app_logger.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/error/exceptions.dart';
 
-class SamsungTizenDriver implements TvDriver {
+class SamsungTizenDriver extends TvDriver {
   final String ipAddress;
   WebSocket? _socket;
   int _reconnectAttempts = 0;
