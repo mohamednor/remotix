@@ -24,6 +24,14 @@ class DeviceProvider extends ChangeNotifier {
 
   DeviceProvider(this._discoverUseCase);
 
+String? _macAddress;
+String? get macAddress => _macAddress;
+
+  void setMacAddress(String? mac) {
+  _macAddress = mac;
+  notifyListeners();
+}
+  
   ScanState get scanState => _scanState;
   List<Device> get devices => List.unmodifiable(_devices);
   Device? get selectedDevice => _selectedDevice;
