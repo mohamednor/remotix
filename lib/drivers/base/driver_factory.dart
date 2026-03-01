@@ -1,21 +1,15 @@
-import '../../domain/entities/device.dart';
-import 'tv_driver.dart';
-import '../lg/lg_webos_driver.dart';
-import '../samsung/samsung_tizen_driver.dart';
-import '../androidtv/android_tv_driver.dart';
+import '../../domain/entities/tv_command.dart';
 
-class DriverFactory {
-  static TvDriver create(Device device) {
-    switch (device.type) {
-      case DeviceType.lgWebOs:
-        return LgWebOsDriver(device.ipAddress);
-      case DeviceType.samsungTizen:
-        return SamsungTizenDriver(device.ipAddress);
-      case DeviceType.androidTv:
-        return AndroidTvDriver(device.ipAddress);
-      case DeviceType.unknown:
-        // خلي unknown يحاول LG أو Samsung؟ الأفضل: خليه Samsung مؤقتًا أو اعمل UI يطلب اختيار النوع
-        return SamsungTizenDriver(device.ipAddress);
-    }
-  }
+enum DriverState { disconnected, connecting, connected, error }
+
+abstract class TvDriver {
+  DriverState get state;
+  Stream<DriverState> get stateStream;
+
+  Future<void> connect();
+  Future<void> sendCommand(TvCommand command);
+  Future<void> disconnect();
+
+  // مهم جدًا — مش abstract
+  bool get isConnected => state == DriverState.connected;
 }
