@@ -10,5 +10,6 @@ abstract class TvDriver {
   Future<void> sendCommand(TvCommand command);
   Future<void> disconnect();
 
+  // مهم جدًا — مش abstract
   bool get isConnected => state == DriverState.connected;
 }
