@@ -1,3 +1,5 @@
+// lib/drivers/samsung/samsung_tizen_driver.dart
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -13,12 +15,12 @@ import '../../core/error/exceptions.dart';
 class SamsungTizenDriver implements TvDriver {
   final String ipAddress;
   WebSocket? _socket;
+  int _reconnectAttempts = 0;
 
   final StreamController<DriverState> _stateController =
       StreamController<DriverState>.broadcast();
 
   DriverState _state = DriverState.disconnected;
-  int _reconnectAttempts = 0;
 
   String? _token;
 
@@ -38,7 +40,7 @@ class SamsungTizenDriver implements TvDriver {
   String get _prefsTokenKey => 'samsung_tizen_token_$ipAddress';
 
   static const Map<TvCommand, String> _keyMap = {
-    TvCommand.power: 'KEY_POWER', // usually power off only
+    TvCommand.power: 'KEY_POWER',
     TvCommand.volumeUp: 'KEY_VOLUP',
     TvCommand.volumeDown: 'KEY_VOLDOWN',
     TvCommand.mute: 'KEY_MUTE',
@@ -55,9 +57,8 @@ class SamsungTizenDriver implements TvDriver {
 
   Future<void> _loadToken() async {
     final prefs = await SharedPreferences.getInstance();
-    final t = prefs.getString(_prefsTokenKey);
-    if (t != null && t.isNotEmpty) {
-      _token = t;
+    _token = prefs.getString(_prefsTokenKey);
+    if (_token != null && _token!.isNotEmpty) {
       AppLogger.i('Samsung: Loaded token');
     }
   }
@@ -69,6 +70,11 @@ class SamsungTizenDriver implements TvDriver {
     AppLogger.i('Samsung: Saved token');
   }
 
+  Future<WebSocket> _tryConnect(String url) async {
+    AppLogger.i('Samsung: Trying $url');
+    return await WebSocket.connect(url).timeout(AppConstants.connectTimeout);
+  }
+
   @override
   Future<void> connect() async {
     try {
@@ -77,15 +83,22 @@ class SamsungTizenDriver implements TvDriver {
 
       final appName = 'Remotix';
       final nameBase64 = base64Encode(utf8.encode(appName));
+      final nameEncoded = Uri.encodeComponent(appName);
       final tokenParam = (_token != null && _token!.isNotEmpty) ? '&token=$_token' : '';
 
-      final url =
+      final urlBase64 =
           'ws://$ipAddress:${AppConstants.samsungTizenPort}'
           '/api/v2/channels/samsung.remote.control?name=$nameBase64$tokenParam';
 
-      AppLogger.i('Samsung: Connecting $url');
+      final urlEncoded =
+          'ws://$ipAddress:${AppConstants.samsungTizenPort}'
+          '/api/v2/channels/samsung.remote.control?name=$nameEncoded$tokenParam';
 
-      _socket = await WebSocket.connect(url).timeout(AppConstants.connectTimeout);
+      try {
+        _socket = await _tryConnect(urlBase64);
+      } catch (_) {
+        _socket = await _tryConnect(urlEncoded);
+      }
 
       _socket!.listen(
         (dynamic data) {
@@ -127,9 +140,7 @@ class SamsungTizenDriver implements TvDriver {
           await _saveToken(token);
         }
       }
-    } catch (_) {
-      // ignore
-    }
+    } catch (_) {}
   }
 
   @override
@@ -176,7 +187,6 @@ class SamsungTizenDriver implements TvDriver {
     } catch (_) {
       // ignore
     } finally {
-      _socket = null;
       _setState(DriverState.disconnected);
     }
   }
