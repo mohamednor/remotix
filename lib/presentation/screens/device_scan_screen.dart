@@ -42,17 +42,6 @@ class _DeviceScanScreenState extends State<DeviceScanScreen>
     });
   }
 
-
-  const SizedBox(height: 24),
-const Text(
-  'by: Mohamed Elshref',
-  style: TextStyle(
-    color: Color(0xFF9090B0),
-    fontSize: 10, // صغير جدًا
-  ),
-), 
-
-  
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<DeviceProvider>();
@@ -120,6 +109,7 @@ const Text(
                   fontSize: 14,
                 ),
               ),
+
               if (scanning) ...[
                 const SizedBox(height: 32),
                 const SizedBox(
@@ -131,11 +121,13 @@ const Text(
                   ),
                 ),
               ],
+
               if (provider.scanState == ScanState.done &&
                   provider.devices.isEmpty) ...[
                 const SizedBox(height: 40),
                 _buildRetryButton(context),
               ],
+
               if (provider.scanState == ScanState.error) ...[
                 const SizedBox(height: 16),
                 Text(
@@ -146,6 +138,18 @@ const Text(
                 const SizedBox(height: 24),
                 _buildRetryButton(context),
               ],
+
+              const SizedBox(height: 60),
+
+              // Signature at app start
+              const Text(
+                'by: Mohamed Elshref',
+                style: TextStyle(
+                  color: Color(0xFF9090B0),
+                  fontSize: 10,
+                  letterSpacing: 0.5,
+                ),
+              ),
             ],
           ),
         ),
