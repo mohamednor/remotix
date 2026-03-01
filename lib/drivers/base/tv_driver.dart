@@ -1,3 +1,5 @@
+import '../../domain/entities/tv_command.dart';
+
 enum DriverState { disconnected, connecting, connected, error }
 
 abstract class TvDriver {
@@ -8,5 +10,6 @@ abstract class TvDriver {
   Future<void> sendCommand(TvCommand command);
   Future<void> disconnect();
 
+  /// Helper مشترك لكل الدرايفرز
   bool get isConnected => state == DriverState.connected;
 }
