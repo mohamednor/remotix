@@ -1,14 +1,7 @@
 // lib/presentation/providers/device_provider.dart
 
-import 'dart:async';
-import 'package:flutter/foundation.dart';
-
-import '../../domain/entities/device.dart';
-import '../../domain/entities/tv_command.dart';
-import '../../domain/usecases/discover_devices_usecase.dart';
 import '../../drivers/base/tv_driver.dart';
 import '../../drivers/base/driver_factory.dart';
-import '../../core/utils/app_logger.dart';
 
 enum ScanState { idle, scanning, done, error }
 
