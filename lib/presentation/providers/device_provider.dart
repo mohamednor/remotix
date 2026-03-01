@@ -63,7 +63,7 @@ class DeviceProvider extends ChangeNotifier {
     await _driverStateSub?.cancel();
 
     _selectedDevice = device;
-    _driver = DriverFactory.create(device);
+    _driver = factory.DriverFactory.create(device);
 
     _driverStateSub = _driver!.stateStream.listen((state) {
       _driverState = state;
