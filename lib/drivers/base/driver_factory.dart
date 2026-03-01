@@ -8,40 +8,26 @@ import '../samsung/samsung_tizen_driver.dart';
 
 class DriverFactory {
   static TvDriver create(Device device) {
-    switch (device.type) {
-      case DeviceType.lgWebOs:
-        return LgWebOsDriver(device.ipAddress);
+    final manufacturer = (device.manufacturer ?? '').toLowerCase();
+    final model = (device.model ?? '').toLowerCase();
+    final name = (device.name ?? '').toLowerCase();
 
-      case DeviceType.samsungTizen:
-        return SamsungTizenDriver(device.ipAddress);
+    final combined = '$manufacturer $model $name';
 
-      case DeviceType.androidTv:
-        return AndroidTvDriver(device.ipAddress);
-
-      case DeviceType.unknown:
-      default:
-        // Fallback ذكي لو discovery رجّع Unknown
-        final manufacturer = device.manufacturer ?? '';
-        final model = device.model ?? '';
-        final name = device.name ?? '';
-
-        final s = '$manufacturer $model $name'.toLowerCase();
-
-        if (s.contains('lg') || s.contains('webos')) {
-          return LgWebOsDriver(device.ipAddress);
-        }
-
-        if (s.contains('samsung') || s.contains('tizen')) {
-          return SamsungTizenDriver(device.ipAddress);
-        }
-
-        if (s.contains('android')) {
-          return AndroidTvDriver(device.ipAddress);
-        }
-
-        throw Exception(
-          'Unsupported TV type: ${device.type} (${device.ipAddress})',
-        );
+    if (combined.contains('lg') || combined.contains('webos')) {
+      return LgWebOsDriver(device.ipAddress);
     }
+
+    if (combined.contains('samsung') || combined.contains('tizen')) {
+      return SamsungTizenDriver(device.ipAddress);
+    }
+
+    if (combined.contains('android')) {
+      return AndroidTvDriver(device.ipAddress);
+    }
+
+    throw Exception(
+      'Unsupported TV type: ${device.ipAddress}',
+    );
   }
 }
