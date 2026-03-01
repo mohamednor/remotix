@@ -42,6 +42,17 @@ class _DeviceScanScreenState extends State<DeviceScanScreen>
     });
   }
 
+
+  const SizedBox(height: 24),
+const Text(
+  'by: Mohamed Elshref',
+  style: TextStyle(
+    color: Color(0xFF9090B0),
+    fontSize: 10, // صغير جدًا
+  ),
+), 
+
+  
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<DeviceProvider>();
