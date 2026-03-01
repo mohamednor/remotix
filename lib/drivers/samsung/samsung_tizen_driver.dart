@@ -12,8 +12,9 @@ import '../../core/utils/app_logger.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/error/exceptions.dart';
 
-class SamsungTizenDriver implements TvDriver {
+class SamsungTizenDriver extends TvDriver {
   final String ipAddress;
+
   WebSocket? _socket;
   int _reconnectAttempts = 0;
 
@@ -34,7 +35,7 @@ class SamsungTizenDriver implements TvDriver {
 
   void _setState(DriverState s) {
     _state = s;
-    _stateController.add(s);
+    if (!_stateController.isClosed) _stateController.add(s);
   }
 
   String get _prefsTokenKey => 'samsung_tizen_token_$ipAddress';
@@ -72,7 +73,7 @@ class SamsungTizenDriver implements TvDriver {
 
   Future<WebSocket> _tryConnect(String url) async {
     AppLogger.i('Samsung: Trying $url');
-    return await WebSocket.connect(url).timeout(AppConstants.connectTimeout);
+    return WebSocket.connect(url).timeout(AppConstants.connectTimeout);
   }
 
   @override
@@ -81,10 +82,20 @@ class SamsungTizenDriver implements TvDriver {
       _setState(DriverState.connecting);
       await _loadToken();
 
+      // اقفل أي socket قديمة
+      try {
+        await _socket?.close();
+      } catch (_) {}
+      _socket = null;
+
       final appName = 'Remotix';
+
+      // Samsung docs بتقول name=base64 غالبًا، لكن بعض الأجهزة بتمشي encoded
       final nameBase64 = base64Encode(utf8.encode(appName));
       final nameEncoded = Uri.encodeComponent(appName);
-      final tokenParam = (_token != null && _token!.isNotEmpty) ? '&token=$_token' : '';
+
+      final tokenParam =
+          (_token != null && _token!.isNotEmpty) ? '&token=$_token' : '';
 
       final urlBase64 =
           'ws://$ipAddress:${AppConstants.samsungTizenPort}'
@@ -105,15 +116,17 @@ class SamsungTizenDriver implements TvDriver {
           AppLogger.d('Samsung RX: $data');
           _handleMessage(data);
         },
-        onError: (Object e) {
-          AppLogger.e('Samsung WebSocket error', e);
+        onError: (Object e, StackTrace st) {
+          AppLogger.e('Samsung WebSocket error', e, st);
           _setState(DriverState.error);
           _scheduleReconnect();
         },
         onDone: () {
           AppLogger.w('Samsung WebSocket closed');
           _setState(DriverState.disconnected);
+          _scheduleReconnect();
         },
+        cancelOnError: true,
       );
 
       _reconnectAttempts = 0;
@@ -140,7 +153,9 @@ class SamsungTizenDriver implements TvDriver {
           await _saveToken(token);
         }
       }
-    } catch (_) {}
+    } catch (_) {
+      // ignore parse errors
+    }
   }
 
   @override
@@ -149,6 +164,9 @@ class SamsungTizenDriver implements TvDriver {
 
     final key = _keyMap[command];
     if (key == null) return;
+
+    final s = _socket;
+    if (s == null) throw const DriverException('Socket not ready');
 
     try {
       final payload = jsonEncode({
@@ -161,21 +179,29 @@ class SamsungTizenDriver implements TvDriver {
         },
       });
 
-      _socket!.add(payload);
+      s.add(payload);
       AppLogger.d('Samsung: Sent $command -> $key');
     } catch (e, st) {
       AppLogger.e('Samsung sendCommand error', e, st);
+      _setState(DriverState.error);
+      _scheduleReconnect();
     }
   }
 
   void _scheduleReconnect() {
     if (_reconnectAttempts >= AppConstants.maxReconnectAttempts) return;
+
+    // لو already connecting/connected ما نعملش reconnect spam
+    if (_state == DriverState.connecting || _state == DriverState.connected) {
+      return;
+    }
+
     _reconnectAttempts++;
     Future.delayed(AppConstants.reconnectDelay, () async {
       try {
         await connect();
-      } catch (e) {
-        AppLogger.e('Samsung reconnect failed', e);
+      } catch (e, st) {
+        AppLogger.e('Samsung reconnect failed', e, st);
       }
     });
   }
@@ -187,6 +213,7 @@ class SamsungTizenDriver implements TvDriver {
     } catch (_) {
       // ignore
     } finally {
+      _socket = null;
       _setState(DriverState.disconnected);
     }
   }
