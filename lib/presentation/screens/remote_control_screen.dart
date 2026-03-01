@@ -2,6 +2,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import '../../domain/entities/tv_command.dart';
 import '../../drivers/base/tv_driver.dart';
 import '../providers/device_provider.dart';
@@ -28,9 +29,9 @@ class RemoteControlScreen extends StatelessWidget {
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new_rounded,
               color: Colors.white70, size: 18),
-          onPressed: () {
-            provider.disconnect();
-            Navigator.of(context).pop();
+          onPressed: () async {
+            await provider.disconnect();
+            if (context.mounted) Navigator.of(context).pop();
           },
         ),
         title: Column(
@@ -39,9 +40,10 @@ class RemoteControlScreen extends StatelessWidget {
             Text(
               device?.displayName ?? 'Remote',
               style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600),
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             _ConnectionStatus(state: provider.driverState),
           ],
@@ -52,7 +54,8 @@ class RemoteControlScreen extends StatelessWidget {
           children: [
             Expanded(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
                 child: Column(
                   children: [
                     // Power (الزرار الأحمر فقط)
@@ -67,11 +70,11 @@ class RemoteControlScreen extends StatelessWidget {
                     DPadWidget(onCommand: (cmd) => provider.sendCommand(cmd)),
                     const SizedBox(height: 28),
 
-                    // Home / Back / Mute row
+                    // Home / Back row (بدون تكرار MUTE)
                     _buildBottomRow(provider),
                     const SizedBox(height: 24),
 
-                    // Signature (حل سريع داخل شاشة الريموت)
+                    // Signature
                     const Text(
                       'by: Mohamed Elshref',
                       style: TextStyle(
@@ -100,8 +103,11 @@ class RemoteControlScreen extends StatelessWidget {
         size: 68,
         color: const Color(0xFFE53935),
         onTap: () => provider.sendCommand(TvCommand.power),
-        child: const Icon(Icons.power_settings_new_rounded,
-            color: Colors.white, size: 32),
+        child: const Icon(
+          Icons.power_settings_new_rounded,
+          color: Colors.white,
+          size: 32,
+        ),
       ),
     );
   }
@@ -123,15 +129,21 @@ class RemoteControlScreen extends StatelessWidget {
             RemoteButton(
               size: 56,
               onTap: () => provider.sendCommand(TvCommand.mute),
-              child: const Icon(Icons.volume_off_rounded,
-                  color: Colors.white70, size: 24),
+              child: const Icon(
+                Icons.volume_off_rounded,
+                color: Colors.white70,
+                size: 24,
+              ),
             ),
             const SizedBox(height: 6),
-            const Text('MUTE',
-                style: TextStyle(
-                    color: Color(0xFF9090B0),
-                    fontSize: 10,
-                    letterSpacing: 1)),
+            const Text(
+              'MUTE',
+              style: TextStyle(
+                color: Color(0xFF9090B0),
+                fontSize: 10,
+                letterSpacing: 1,
+              ),
+            ),
           ],
         ),
         _buildLabeledControl(
@@ -157,7 +169,10 @@ class RemoteControlScreen extends StatelessWidget {
         Text(
           label,
           style: const TextStyle(
-              color: Color(0xFF9090B0), fontSize: 10, letterSpacing: 1),
+            color: Color(0xFF9090B0),
+            fontSize: 10,
+            letterSpacing: 1,
+          ),
         ),
         const SizedBox(height: 8),
         RemoteButton(
@@ -190,11 +205,6 @@ class RemoteControlScreen extends StatelessWidget {
           onTap: () => provider.sendCommand(TvCommand.home),
           color: _accent,
         ),
-        _buildIconLabelButton(
-          icon: Icons.mic_off_rounded,
-          label: 'MUTE',
-          onTap: () => provider.sendCommand(TvCommand.mute),
-        ),
       ],
     );
   }
@@ -217,7 +227,10 @@ class RemoteControlScreen extends StatelessWidget {
         Text(
           label,
           style: const TextStyle(
-              color: Color(0xFF9090B0), fontSize: 10, letterSpacing: 1),
+            color: Color(0xFF9090B0),
+            fontSize: 10,
+            letterSpacing: 1,
+          ),
         ),
       ],
     );
