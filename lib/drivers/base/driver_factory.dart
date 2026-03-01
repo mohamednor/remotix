@@ -1,115 +1,37 @@
-// lib/presentation/providers/device_provider.dart
-
-import 'dart:async';
-import 'package:flutter/foundation.dart';
-
 import '../../domain/entities/device.dart';
-import '../../domain/entities/tv_command.dart';
-import '../../domain/usecases/discover_devices_usecase.dart';
-import '../../drivers/base/tv_driver.dart';
-import '../../drivers/base/driver_factory.dart';
-import '../../core/utils/app_logger.dart';
+import 'tv_driver.dart';
+import '../androidtv/android_tv_driver.dart';
+import '../lg/lg_webos_driver.dart';
+import '../samsung/samsung_tizen_driver.dart';
 
-enum ScanState { idle, scanning, done, error }
+class DriverFactory {
+  static TvDriver create(Device device) {
+    switch (device.type) {
+      case DeviceType.lgWebOs:
+        return LgWebOsDriver(device.ipAddress);
+      case DeviceType.samsungTizen:
+        return SamsungTizenDriver(device.ipAddress);
+      case DeviceType.androidTv:
+        return AndroidTvDriver(device.ipAddress);
+      case DeviceType.unknown:
+      default:
+        // fallback عشان التطبيق ما يقعش لو الاكتشاف رجّع Unknown
+        final s =
+            '${device.manufacturer} ${device.model} ${device.name}'.toLowerCase();
 
-class DeviceProvider extends ChangeNotifier {
-  final DiscoverDevicesUseCase _discoverUseCase;
+        if (s.contains('lg') || s.contains('webos')) {
+          return LgWebOsDriver(device.ipAddress);
+        }
+        if (s.contains('samsung') || s.contains('tizen')) {
+          return SamsungTizenDriver(device.ipAddress);
+        }
+        if (s.contains('android')) {
+          return AndroidTvDriver(device.ipAddress);
+        }
 
-  ScanState _scanState = ScanState.idle;
-  final List<Device> _devices = [];
-  Device? _selectedDevice;
-
-  TvDriver? _driver;
-  DriverState _driverState = DriverState.disconnected;
-
-  String? _errorMessage;
-  StreamSubscription<DriverState>? _driverStateSub;
-
-  DeviceProvider(this._discoverUseCase);
-
-  ScanState get scanState => _scanState;
-  List<Device> get devices => List.unmodifiable(_devices);
-  Device? get selectedDevice => _selectedDevice;
-  DriverState get driverState => _driverState;
-  String? get errorMessage => _errorMessage;
-  bool get isConnected => _driverState == DriverState.connected;
-
-  Future<void> scanDevices() async {
-    _scanState = ScanState.scanning;
-    _devices.clear();
-    _errorMessage = null;
-    notifyListeners();
-
-    try {
-      final found = await _discoverUseCase();
-      _devices.addAll(found);
-      _scanState = ScanState.done;
-      AppLogger.i('Scan complete: ${_devices.length} devices found');
-    } catch (e, st) {
-      AppLogger.e('Scan failed', e, st);
-      _scanState = ScanState.error;
-      _errorMessage = 'Scan failed: $e';
+        throw Exception(
+          'Unsupported TV type: ${device.typeLabel} (${device.ipAddress})',
+        );
     }
-
-    notifyListeners();
-  }
-
-  Future<void> selectDevice(Device device) async {
-    // Clean up previous driver
-    await _driver?.disconnect();
-    await _driverStateSub?.cancel();
-
-    _selectedDevice = device;
-    _errorMessage = null;
-
-    // Create driver
-    _driver = DriverFactory.create(device);
-
-    // Listen to driver state
-    _driverStateSub = _driver!.stateStream.listen((state) {
-      _driverState = state;
-      notifyListeners();
-    });
-
-    notifyListeners();
-
-    try {
-      await _driver!.connect();
-    } catch (e, st) {
-      AppLogger.e('Driver connect failed', e, st);
-      _errorMessage = e.toString();
-      notifyListeners();
-    }
-  }
-
-  Future<void> sendCommand(TvCommand command) async {
-    if (_driver == null) return;
-
-    try {
-      await _driver!.sendCommand(command);
-    } catch (e, st) {
-      AppLogger.e('sendCommand failed', e, st);
-      _errorMessage = e.toString();
-      notifyListeners();
-    }
-  }
-
-  Future<void> disconnect() async {
-    await _driver?.disconnect();
-    await _driverStateSub?.cancel();
-
-    _selectedDevice = null;
-    _driver = null;
-    _driverState = DriverState.disconnected;
-    _errorMessage = null;
-
-    notifyListeners();
-  }
-
-  @override
-  void dispose() {
-    _driverStateSub?.cancel();
-    _driver?.disconnect();
-    super.dispose();
   }
 }
