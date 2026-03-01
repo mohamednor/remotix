@@ -1,3 +1,5 @@
+// lib/presentation/providers/device_provider.dart
+
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 
@@ -40,7 +42,9 @@ class DeviceProvider extends ChangeNotifier {
 
     try {
       final found = await _discoverUseCase();
-      _devices.addAll(found);
+      _devices
+        ..clear()
+        ..addAll(found);
       _scanState = ScanState.done;
       AppLogger.i('Scan complete: ${_devices.length} devices found');
     } catch (e, st) {
@@ -53,25 +57,39 @@ class DeviceProvider extends ChangeNotifier {
   }
 
   Future<void> selectDevice(Device device) async {
-    await _driver?.disconnect();
+    // تنظيف أي اتصال قديم
     await _driverStateSub?.cancel();
+    _driverStateSub = null;
+
+    try {
+      await _driver?.dispose();
+    } catch (_) {}
+    _driver = null;
 
     _selectedDevice = device;
     _driverState = DriverState.connecting;
     _errorMessage = null;
-
-    _driver = DriverFactory.create(device);
-
-    _driverStateSub = _driver!.stateStream.listen((state) {
-      _driverState = state;
-      notifyListeners();
-    });
-
     notifyListeners();
 
     try {
-      await _driver!.connect();
-    } catch (e) {
+      final driver = DriverFactory.create(device);
+      _driver = driver;
+
+      _driverStateSub = driver.stateStream.listen((state) {
+        if (_driverState == state) return;
+        _driverState = state;
+        notifyListeners();
+      });
+
+      await driver.connect();
+      // الـ driver نفسه هيبعت connected على الستريم، لكن لو تأخر:
+      if (_driverState != DriverState.connected &&
+          driver.state == DriverState.connected) {
+        _driverState = DriverState.connected;
+        notifyListeners();
+      }
+    } catch (e, st) {
+      AppLogger.e('Select/connect failed', e, st);
       _driverState = DriverState.error;
       _errorMessage = e.toString();
       notifyListeners();
@@ -79,18 +97,26 @@ class DeviceProvider extends ChangeNotifier {
   }
 
   Future<void> sendCommand(TvCommand command) async {
-    if (_driver == null) return;
+    final d = _driver;
+    if (d == null) return;
 
     try {
-      await _driver!.sendCommand(command);
-    } catch (e) {
+      await d.sendCommand(command);
+    } catch (e, st) {
+      AppLogger.e('Send command failed', e, st);
       _errorMessage = e.toString();
       notifyListeners();
     }
   }
 
   Future<void> disconnect() async {
-    await _driver?.disconnect();
+    await _driverStateSub?.cancel();
+    _driverStateSub = null;
+
+    try {
+      await _driver?.dispose();
+    } catch (_) {}
+
     _driver = null;
     _selectedDevice = null;
     _driverState = DriverState.disconnected;
@@ -100,7 +126,8 @@ class DeviceProvider extends ChangeNotifier {
   @override
   void dispose() {
     _driverStateSub?.cancel();
-    _driver?.disconnect();
+    // ignore: discarded_futures
+    _driver?.dispose();
     super.dispose();
   }
 }
