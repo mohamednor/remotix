@@ -1,15 +1,34 @@
-import '../../domain/entities/tv_command.dart';
+// lib/drivers/base/driver_factory.dart
 
-enum DriverState { disconnected, connecting, connected, error }
+import '../../domain/entities/device.dart';
+import 'tv_driver.dart';
 
-abstract class TvDriver {
-  DriverState get state;
-  Stream<DriverState> get stateStream;
+import '../lg/lg_webos_driver.dart';
+import '../samsung/samsung_tizen_driver.dart';
+import '../androidtv/android_tv_driver.dart';
+import '../../core/utils/app_logger.dart';
 
-  Future<void> connect();
-  Future<void> sendCommand(TvCommand command);
-  Future<void> disconnect();
+class DriverFactory {
+  static TvDriver create(Device device) {
+    AppLogger.i(
+      'DriverFactory: Creating driver for ${device.typeLabel} @ ${device.ipAddress}',
+    );
 
-  // مهم جدًا — مش abstract
-  bool get isConnected => state == DriverState.connected;
+    switch (device.type) {
+      case DeviceType.lgWebOs:
+        return LgWebOsDriver(device.ipAddress);
+
+      case DeviceType.samsungTizen:
+        return SamsungTizenDriver(device.ipAddress);
+
+      case DeviceType.androidTv:
+        return AndroidTvDriver(device.ipAddress);
+
+      case DeviceType.unknown:
+      default:
+        // safest fallback: do NOT assume Samsung for unknown
+        // but keep it if you want:
+        return SamsungTizenDriver(device.ipAddress);
+    }
+  }
 }
