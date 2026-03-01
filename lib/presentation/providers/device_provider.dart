@@ -1,7 +1,12 @@
-// lib/presentation/providers/device_provider.dart
+import 'dart:async';
+import 'package:flutter/foundation.dart';
 
+import '../../domain/entities/device.dart';
+import '../../domain/entities/tv_command.dart';
+import '../../domain/usecases/discover_devices_usecase.dart';
 import '../../drivers/base/tv_driver.dart';
 import '../../drivers/base/driver_factory.dart';
+import '../../core/utils/app_logger.dart';
 
 enum ScanState { idle, scanning, done, error }
 
@@ -41,27 +46,22 @@ class DeviceProvider extends ChangeNotifier {
     } catch (e, st) {
       AppLogger.e('Scan failed', e, st);
       _scanState = ScanState.error;
-      _errorMessage = 'Scan failed: $e';
+      _errorMessage = e.toString();
     }
 
     notifyListeners();
   }
 
   Future<void> selectDevice(Device device) async {
-    // clean old connection
-    try {
-      await _driver?.disconnect();
-    } catch (_) {}
+    await _driver?.disconnect();
     await _driverStateSub?.cancel();
 
     _selectedDevice = device;
     _driverState = DriverState.connecting;
     _errorMessage = null;
 
-    // create new driver
     _driver = DriverFactory.create(device);
 
-    // listen driver state
     _driverStateSub = _driver!.stateStream.listen((state) {
       _driverState = state;
       notifyListeners();
@@ -69,22 +69,20 @@ class DeviceProvider extends ChangeNotifier {
 
     notifyListeners();
 
-    // connect
     try {
       await _driver!.connect();
     } catch (e) {
-      _errorMessage = e.toString();
       _driverState = DriverState.error;
+      _errorMessage = e.toString();
       notifyListeners();
     }
   }
 
   Future<void> sendCommand(TvCommand command) async {
-    final d = _driver;
-    if (d == null) return;
+    if (_driver == null) return;
 
     try {
-      await d.sendCommand(command);
+      await _driver!.sendCommand(command);
     } catch (e) {
       _errorMessage = e.toString();
       notifyListeners();
@@ -92,12 +90,9 @@ class DeviceProvider extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
-    try {
-      await _driver?.disconnect();
-    } catch (_) {}
-
-    _selectedDevice = null;
+    await _driver?.disconnect();
     _driver = null;
+    _selectedDevice = null;
     _driverState = DriverState.disconnected;
     notifyListeners();
   }
