@@ -74,7 +74,7 @@ class LgWebOsDriver extends TvDriver {
       _isRegistered = false;
       _registeredCompleter = Completer<void>();
 
-      final url = 'ws://$ipAddress:${AppConstants.lgWebOsPort}';
+      final url = 'ws://$ipAddress:${AppConstants.lgWebOsPort}/api/websocket';
       AppLogger.i('LG: Connecting to $url');
 
       await _closeSockets();
