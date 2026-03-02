@@ -151,7 +151,8 @@ class LgWebOsDriver extends TvDriver {
       'payload': {
         'forcePairing': false,
         'pairingType': 'PROMPT',
-        if (_clientKey != null && _clientKey!.isNotEmpty) 'client-key': _clientKey,
+        if (_clientKey != null && _clientKey!.isNotEmpty)
+          'client-key': _clientKey,
         'manifest': {
           'manifestVersion': 1,
           'appVersion': '1.0',
@@ -224,15 +225,30 @@ class LgWebOsDriver extends TvDriver {
     }
   }
 
+  // ✅✅✅ أهم تعديل: pointer socket بروتوكول TEXT مش JSON
   Future<void> _sendPointerButton(String name) async {
     if (_pointerSocket == null) {
-      // Try to re-request if pointer not ready yet
       await _requestPointerSocket();
       AppLogger.w('LG: Pointer socket not ready yet');
       return;
     }
+
+    // 1) Primary: TEXT protocol (works on webOS)
+    final textMsg = 'type:button\nname:$name\n\n';
+
     try {
-      _pointerSocket!.add(jsonEncode({'type': 'button', 'name': name}));
+      _pointerSocket!.add(textMsg);
+      AppLogger.d('LG PTR TX(text): $textMsg');
+      return;
+    } catch (e, st) {
+      AppLogger.e('LG: pointer text send failed, will try json', e, st);
+    }
+
+    // 2) Fallback: JSON (لو موديل مختلف)
+    try {
+      final jsonMsg = jsonEncode({'type': 'button', 'name': name});
+      _pointerSocket!.add(jsonMsg);
+      AppLogger.d('LG PTR TX(json): $jsonMsg');
     } catch (e, st) {
       AppLogger.e('LG: sendPointerButton failed', e, st);
     }
@@ -244,7 +260,7 @@ class LgWebOsDriver extends TvDriver {
 
     try {
       switch (command) {
-        // POWER OFF ✅ (POWER ON محتاج WOL)
+        // POWER (LG غالبًا بيعمل Power OFF من خلال SSAP)
         case TvCommand.power:
           await _sendRaw({
             'id': 'cmd_${++_messageId}',
