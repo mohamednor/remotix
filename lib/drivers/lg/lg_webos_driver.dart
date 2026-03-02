@@ -15,8 +15,8 @@ import '../../core/error/exceptions.dart';
 class LgWebOsDriver extends TvDriver {
   final String ipAddress;
 
-  WebSocket? _ssapSocket; // main SSAP ws (register + requests)
-  WebSocket? _pointerSocket; // pointer input ws
+  WebSocket? _ssapSocket;
+  WebSocket? _pointerSocket;
 
   final StreamController<DriverState> _stateController =
       StreamController<DriverState>.broadcast();
@@ -30,6 +30,10 @@ class LgWebOsDriver extends TvDriver {
   String? _pointerPath;
 
   bool _muteState = false;
+
+  // ✅ جديد: نستنى registration قبل ما نبعت أوامر
+  Completer<void>? _registeredCompleter;
+  bool _isRegistered = false;
 
   LgWebOsDriver(this.ipAddress);
 
@@ -67,6 +71,9 @@ class LgWebOsDriver extends TvDriver {
       _setState(DriverState.connecting);
       await _loadClientKey();
 
+      _isRegistered = false;
+      _registeredCompleter = Completer<void>();
+
       final url = 'ws://$ipAddress:${AppConstants.lgWebOsPort}';
       AppLogger.i('LG: Connecting to $url');
 
@@ -92,17 +99,27 @@ class LgWebOsDriver extends TvDriver {
         cancelOnError: true,
       );
 
-      // Register (pairing). TV will prompt only first time if client-key is reused.
+      // Register (pairing)
       await _sendRegistration();
 
-      // Request pointer socket (needed for arrows/OK/BACK/HOME).
+      // نستنى registered (لو التلفزيون محتاج prompt هتتأخر لحد ما توافق)
+      await _registeredCompleter!.future.timeout(
+        const Duration(seconds: 12),
+        onTimeout: () {
+          throw const ConnectionException(
+            'LG pairing لم يكتمل. وافق على رسالة الاقتران على التلفزيون ثم أعد المحاولة.',
+          );
+        },
+      );
+
+      // Request pointer socket
       await _requestPointerSocket();
 
-      // هنعتبر connected لما نقدر نتكلم فعلاً (على الأقل ssap شغال)
+      // ✅ دلوقتي فقط نعتبر Connected
       _setState(DriverState.connected);
 
       _reconnectAttempts = 0;
-      AppLogger.i('LG: Connected + registration/pointer requested');
+      AppLogger.i('LG: Connected + registered');
     } on TimeoutException {
       _setState(DriverState.error);
       throw const ConnectionException('LG connection timed out');
@@ -118,17 +135,20 @@ class LgWebOsDriver extends TvDriver {
       final msg = jsonDecode(data.toString()) as Map<String, dynamic>;
       final type = msg['type'];
 
-      // Pairing success => store client-key
       if (type == 'registered') {
         final payload = msg['payload'];
         final key = (payload is Map) ? payload['client-key'] : null;
         if (key is String && key.isNotEmpty) {
           await _saveClientKey(key);
         }
+
+        _isRegistered = true;
+        if (_registeredCompleter != null && !_registeredCompleter!.isCompleted) {
+          _registeredCompleter!.complete();
+        }
         return;
       }
 
-      // Pointer socket response
       final uri = msg['uri'];
       if (uri == 'ssap://com.webos.service.networkinput/getPointerInputSocket') {
         final payload = msg['payload'];
@@ -139,9 +159,7 @@ class LgWebOsDriver extends TvDriver {
           await _connectPointerSocket();
         }
       }
-    } catch (_) {
-      // ignore parse errors
-    }
+    } catch (_) {}
   }
 
   Future<void> _sendRegistration() async {
@@ -212,135 +230,114 @@ class LgWebOsDriver extends TvDriver {
 
   Future<void> _sendRaw(Map<String, dynamic> payload) async {
     final s = _ssapSocket;
-    if (s == null) {
-      AppLogger.w('LG: Cannot send, ssap socket is null');
-      return;
-    }
-    try {
-      s.add(jsonEncode(payload));
-    } catch (e, st) {
-      AppLogger.e('LG: sendRaw failed', e, st);
-      _setState(DriverState.error);
-      _scheduleReconnect();
-    }
+    if (s == null) return;
+    s.add(jsonEncode(payload));
   }
 
-  // ✅✅✅ أهم تعديل: pointer socket بروتوكول TEXT مش JSON
   Future<void> _sendPointerButton(String name) async {
     if (_pointerSocket == null) {
       await _requestPointerSocket();
-      AppLogger.w('LG: Pointer socket not ready yet');
       return;
     }
 
-    // 1) Primary: TEXT protocol (works on webOS)
     final textMsg = 'type:button\nname:$name\n\n';
 
     try {
       _pointerSocket!.add(textMsg);
-      AppLogger.d('LG PTR TX(text): $textMsg');
       return;
-    } catch (e, st) {
-      AppLogger.e('LG: pointer text send failed, will try json', e, st);
-    }
+    } catch (_) {}
 
-    // 2) Fallback: JSON (لو موديل مختلف)
     try {
-      final jsonMsg = jsonEncode({'type': 'button', 'name': name});
-      _pointerSocket!.add(jsonMsg);
-      AppLogger.d('LG PTR TX(json): $jsonMsg');
-    } catch (e, st) {
-      AppLogger.e('LG: sendPointerButton failed', e, st);
-    }
+      _pointerSocket!.add(jsonEncode({'type': 'button', 'name': name}));
+    } catch (_) {}
   }
 
   @override
   Future<void> sendCommand(TvCommand command) async {
-    if (!isConnected) throw const DriverException('Not connected');
+    if (!isConnected) {
+      throw const DriverException('Not connected');
+    }
+    if (!_isRegistered) {
+      throw const DriverException('LG pairing not completed yet.');
+    }
 
-    try {
-      switch (command) {
-        // POWER (LG غالبًا بيعمل Power OFF من خلال SSAP)
-        case TvCommand.power:
-          await _sendRaw({
-            'id': 'cmd_${++_messageId}',
-            'type': 'request',
-            'uri': 'ssap://system/turnOff',
-            'payload': {},
-          });
-          break;
+    switch (command) {
+      case TvCommand.power:
+        await _sendRaw({
+          'id': 'cmd_${++_messageId}',
+          'type': 'request',
+          'uri': 'ssap://system/turnOff',
+          'payload': {},
+        });
+        break;
 
-        case TvCommand.volumeUp:
-          await _sendRaw({
-            'id': 'cmd_${++_messageId}',
-            'type': 'request',
-            'uri': 'ssap://audio/volumeUp',
-            'payload': {},
-          });
-          break;
+      case TvCommand.volumeUp:
+        await _sendRaw({
+          'id': 'cmd_${++_messageId}',
+          'type': 'request',
+          'uri': 'ssap://audio/volumeUp',
+          'payload': {},
+        });
+        break;
 
-        case TvCommand.volumeDown:
-          await _sendRaw({
-            'id': 'cmd_${++_messageId}',
-            'type': 'request',
-            'uri': 'ssap://audio/volumeDown',
-            'payload': {},
-          });
-          break;
+      case TvCommand.volumeDown:
+        await _sendRaw({
+          'id': 'cmd_${++_messageId}',
+          'type': 'request',
+          'uri': 'ssap://audio/volumeDown',
+          'payload': {},
+        });
+        break;
 
-        case TvCommand.mute:
-          _muteState = !_muteState;
-          await _sendRaw({
-            'id': 'cmd_${++_messageId}',
-            'type': 'request',
-            'uri': 'ssap://audio/setMute',
-            'payload': {'mute': _muteState},
-          });
-          break;
+      case TvCommand.mute:
+        _muteState = !_muteState;
+        await _sendRaw({
+          'id': 'cmd_${++_messageId}',
+          'type': 'request',
+          'uri': 'ssap://audio/setMute',
+          'payload': {'mute': _muteState},
+        });
+        break;
 
-        case TvCommand.channelUp:
-          await _sendRaw({
-            'id': 'cmd_${++_messageId}',
-            'type': 'request',
-            'uri': 'ssap://tv/channelUp',
-            'payload': {},
-          });
-          break;
+      case TvCommand.channelUp:
+        await _sendRaw({
+          'id': 'cmd_${++_messageId}',
+          'type': 'request',
+          'uri': 'ssap://tv/channelUp',
+          'payload': {},
+        });
+        break;
 
-        case TvCommand.channelDown:
-          await _sendRaw({
-            'id': 'cmd_${++_messageId}',
-            'type': 'request',
-            'uri': 'ssap://tv/channelDown',
-            'payload': {},
-          });
-          break;
+      case TvCommand.channelDown:
+        await _sendRaw({
+          'id': 'cmd_${++_messageId}',
+          'type': 'request',
+          'uri': 'ssap://tv/channelDown',
+          'payload': {},
+        });
+        break;
 
-        // Navigation via pointer socket
-        case TvCommand.up:
-          await _sendPointerButton('UP');
-          break;
-        case TvCommand.down:
-          await _sendPointerButton('DOWN');
-          break;
-        case TvCommand.left:
-          await _sendPointerButton('LEFT');
-          break;
-        case TvCommand.right:
-          await _sendPointerButton('RIGHT');
-          break;
-        case TvCommand.ok:
-          await _sendPointerButton('ENTER');
-          break;
-        case TvCommand.back:
-          await _sendPointerButton('BACK');
-          break;
-        case TvCommand.home:
-          await _sendPointerButton('HOME');
-          break;
-      }
-    } catch (e, st) {
-      AppLogger.e('LG sendCommand error', e, st);
+      case TvCommand.up:
+        await _sendPointerButton('UP');
+        break;
+      case TvCommand.down:
+        await _sendPointerButton('DOWN');
+        break;
+      case TvCommand.left:
+        await _sendPointerButton('LEFT');
+        break;
+      case TvCommand.right:
+        await _sendPointerButton('RIGHT');
+        break;
+      case TvCommand.ok:
+        await _sendPointerButton('ENTER');
+        break;
+      case TvCommand.back:
+        await _sendPointerButton('BACK');
+        break;
+      case TvCommand.home:
+        await _sendPointerButton('HOME');
+        break;
     }
   }
 
@@ -369,12 +366,9 @@ class LgWebOsDriver extends TvDriver {
 
   @override
   Future<void> disconnect() async {
-    try {
-      await _closeSockets();
-    } catch (_) {
-      // ignore
-    } finally {
-      _setState(DriverState.disconnected);
-    }
+    await _closeSockets();
+    _isRegistered = false;
+    _registeredCompleter = null;
+    _setState(DriverState.disconnected);
   }
 }
