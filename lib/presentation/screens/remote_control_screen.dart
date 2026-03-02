@@ -58,38 +58,22 @@ class RemoteControlScreen extends StatelessWidget {
                     const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
                 child: Column(
                   children: [
-                    // Power (الزرار الأحمر فقط)
                     _buildPowerButton(provider),
                     const SizedBox(height: 28),
 
-                    // Volume + Channel
                     _buildVolumeChannelRow(provider),
                     const SizedBox(height: 28),
 
-                    // D-Pad
                     DPadWidget(onCommand: (cmd) => provider.sendCommand(cmd)),
                     const SizedBox(height: 28),
 
-                    // Home / Back row (بدون تكرار MUTE)
                     _buildBottomRow(provider),
                     const SizedBox(height: 24),
-
-                    // Signature
-                    const Text(
-                      'by: Mohamed Elshref',
-                      style: TextStyle(
-                        color: Color(0xFF9090B0),
-                        fontSize: 10,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
                   ],
                 ),
               ),
             ),
 
-            // AdMob banner
             const AdBannerWidget(),
           ],
         ),
