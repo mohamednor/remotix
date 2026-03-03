@@ -66,6 +66,33 @@ class LgWebOsDriver extends TvDriver {
     AppLogger.i('LG: Saved client-key');
   }
 
+  Future<void> _clearClientKey() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_prefsKeyClientKey);
+    _clientKey = null;
+    AppLogger.w('LG: Cleared saved client-key');
+  }
+
+  Future<WebSocket> _connectSsapiWithFallback() async {
+    final endpoints = <String>[
+      'ws://$ipAddress:${AppConstants.lgWebOsPort}/api/websocket',
+      'ws://$ipAddress:${AppConstants.lgWebOsPort}/', // بعض الموديلات
+    ];
+
+    Object? lastErr;
+    for (final url in endpoints) {
+      try {
+        AppLogger.i('LG: Trying SSAP WS: $url');
+        final s = await WebSocket.connect(url).timeout(AppConstants.connectTimeout);
+        return s;
+      } catch (e) {
+        lastErr = e;
+        AppLogger.w('LG: Failed SSAP WS: $url -> $e');
+      }
+    }
+    throw ConnectionException('LG WebSocket connect failed: $lastErr');
+  }
+
   @override
   Future<void> connect() async {
     try {
@@ -78,14 +105,9 @@ class LgWebOsDriver extends TvDriver {
       _pointerReadyCompleter = Completer<void>();
       _pointerPath = null;
 
-      // ✅ endpoint الصحيح
-      final url = 'ws://$ipAddress:${AppConstants.lgWebOsPort}/api/websocket';
-      AppLogger.i('LG: Connecting to $url');
-
       await _closeSockets();
 
-      _ssapSocket =
-          await WebSocket.connect(url).timeout(AppConstants.connectTimeout);
+      _ssapSocket = await _connectSsapiWithFallback();
 
       _ssapSocket!.listen(
         (data) async {
@@ -104,35 +126,36 @@ class LgWebOsDriver extends TvDriver {
         cancelOnError: true,
       );
 
-      // 1) جرّب PROMPT الأول
-      await _sendRegistration(pairingType: 'PROMPT');
+      // 1) Register (اول محاولة)
+      await _sendRegistration();
 
-      // نستنى registered — وقت أطول عشان التلفزيون يطلع رسالة
-      final registered = await _waitRegistered(seconds: 18);
+      // 2) استنى registered
+      final ok = await _waitRegistered(seconds: 18);
 
-      // 2) لو ماحصلش registered جرّب PIN fallback (بعض موديلات)
-      if (!registered) {
-        AppLogger.w('LG: PROMPT pairing timeout, trying PIN fallback...');
-        await _sendRegistration(pairingType: 'PIN');
-        final registered2 = await _waitRegistered(seconds: 25);
-        if (!registered2) {
+      // 3) لو ماجاش registered: امسح key القديم وجرب تاني (ده بيحل عدم ظهور prompt)
+      if (!ok) {
+        await _clearClientKey();
+        _isRegistered = false;
+        _registeredCompleter = Completer<void>();
+
+        await _sendRegistration(forcePairing: true);
+
+        final ok2 = await _waitRegistered(seconds: 25);
+        if (!ok2) {
           throw const ConnectionException(
-            'LG pairing لم يكتمل. تأكد من تفعيل LG Connect Apps / السماح بالاقتران على التلفزيون.',
+            'LG pairing لم يكتمل. فعّل LG Connect Apps ووافق على الاقتران على التلفزيون.',
           );
         }
       }
 
-      // ✅ هنا بس نقول Connected
+      // ✅ دلوقتي بس Connected
       _setState(DriverState.connected);
 
-      // اطلب pointer socket (لكن بدون ما نفشل connect لو اتأخر)
+      // pointer socket (مش هنفشل لو اتأخر)
       await _requestPointerSocket();
 
       _reconnectAttempts = 0;
       AppLogger.i('LG: Connected + registered');
-    } on TimeoutException {
-      _setState(DriverState.error);
-      throw const ConnectionException('LG connection timed out');
     } catch (e, st) {
       _setState(DriverState.error);
       AppLogger.e('LG connect failed', e, st);
@@ -183,13 +206,13 @@ class LgWebOsDriver extends TvDriver {
     }
   }
 
-  Future<void> _sendRegistration({required String pairingType}) async {
+  Future<void> _sendRegistration({bool forcePairing = false}) async {
     await _sendRaw({
       'id': 'register_0',
       'type': 'register',
       'payload': {
-        'forcePairing': false,
-        'pairingType': pairingType,
+        'forcePairing': forcePairing,
+        'pairingType': 'PROMPT',
         if ((_clientKey ?? '').isNotEmpty) 'client-key': _clientKey,
         'manifest': {
           'manifestVersion': 1,
@@ -258,9 +281,7 @@ class LgWebOsDriver extends TvDriver {
     s.add(jsonEncode(payload));
   }
 
-  // ✅ pointer socket = TEXT protocol
   Future<void> _sendPointerButton(String name) async {
-    // لو pointer مش جاهز: اطلبه واستنى شوية بسيطة
     if (_pointerSocket == null) {
       await _requestPointerSocket();
       try {
@@ -271,13 +292,12 @@ class LgWebOsDriver extends TvDriver {
 
     final p = _pointerSocket;
     if (p == null) {
-      AppLogger.w('LG: Pointer socket still not ready, drop $name');
+      AppLogger.w('LG: Pointer not ready, drop $name');
       return;
     }
 
     final msg = 'type:button\nname:$name\n\n';
     p.add(msg);
-    AppLogger.d('LG PTR TX: $msg');
   }
 
   @override
@@ -371,9 +391,7 @@ class LgWebOsDriver extends TvDriver {
     Future.delayed(AppConstants.reconnectDelay, () async {
       try {
         await connect();
-      } catch (e, st) {
-        AppLogger.e('LG reconnect failed', e, st);
-      }
+      } catch (_) {}
     });
   }
 
