@@ -25,6 +25,9 @@ class DeviceProvider extends ChangeNotifier {
   String? _errorMessage;
   StreamSubscription<DriverState>? _driverStateSub;
 
+  // ✅ Guard ضد الضغط المتكرر
+  bool _isSelecting = false;
+
   DeviceProvider(this._discoverUseCase);
 
   ScanState get scanState => _scanState;
@@ -57,21 +60,23 @@ class DeviceProvider extends ChangeNotifier {
   }
 
   Future<void> selectDevice(Device device) async {
-    // تنظيف أي اتصال قديم
-    await _driverStateSub?.cancel();
-    _driverStateSub = null;
+    if (_isSelecting) return; // ✅ يمنع تكرار الضغط
+    _isSelecting = true;
 
     try {
-      await _driver?.dispose();
-    } catch (_) {}
-    _driver = null;
+      await _driverStateSub?.cancel();
+      _driverStateSub = null;
 
-    _selectedDevice = device;
-    _driverState = DriverState.connecting;
-    _errorMessage = null;
-    notifyListeners();
+      try {
+        await _driver?.dispose();
+      } catch (_) {}
+      _driver = null;
 
-    try {
+      _selectedDevice = device;
+      _driverState = DriverState.connecting;
+      _errorMessage = null;
+      notifyListeners();
+
       final driver = DriverFactory.create(device);
       _driver = driver;
 
@@ -82,17 +87,13 @@ class DeviceProvider extends ChangeNotifier {
       });
 
       await driver.connect();
-      // الـ driver نفسه هيبعت connected على الستريم، لكن لو تأخر:
-      if (_driverState != DriverState.connected &&
-          driver.state == DriverState.connected) {
-        _driverState = DriverState.connected;
-        notifyListeners();
-      }
     } catch (e, st) {
       AppLogger.e('Select/connect failed', e, st);
       _driverState = DriverState.error;
       _errorMessage = e.toString();
       notifyListeners();
+    } finally {
+      _isSelecting = false;
     }
   }
 
