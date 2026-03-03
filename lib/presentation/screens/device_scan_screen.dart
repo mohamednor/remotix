@@ -15,6 +15,9 @@ class _DeviceScanScreenState extends State<DeviceScanScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _pulseController;
 
+  // ✅ منع تكرار التنقل
+  bool _navigated = false;
+
   @override
   void initState() {
     super.initState();
@@ -33,10 +36,15 @@ class _DeviceScanScreenState extends State<DeviceScanScreen>
   }
 
   void _startScan() {
+    if (_navigated) return;
+
     context.read<DeviceProvider>().scanDevices().then((_) {
       if (!mounted) return;
+
       final provider = context.read<DeviceProvider>();
-      if (provider.devices.isNotEmpty) {
+
+      if (provider.devices.isNotEmpty && !_navigated) {
+        _navigated = true;
         Navigator.of(context).pushReplacementNamed('/devices');
       }
     });
@@ -109,7 +117,6 @@ class _DeviceScanScreenState extends State<DeviceScanScreen>
                   fontSize: 14,
                 ),
               ),
-
               if (scanning) ...[
                 const SizedBox(height: 32),
                 const SizedBox(
@@ -121,13 +128,11 @@ class _DeviceScanScreenState extends State<DeviceScanScreen>
                   ),
                 ),
               ],
-
               if (provider.scanState == ScanState.done &&
                   provider.devices.isEmpty) ...[
                 const SizedBox(height: 40),
                 _buildRetryButton(context),
               ],
-
               if (provider.scanState == ScanState.error) ...[
                 const SizedBox(height: 16),
                 Text(
@@ -138,10 +143,8 @@ class _DeviceScanScreenState extends State<DeviceScanScreen>
                 const SizedBox(height: 24),
                 _buildRetryButton(context),
               ],
-
               const SizedBox(height: 60),
 
-              // Signature at app start
               const Text(
                 'by: Mohamed Elshref',
                 style: TextStyle(
@@ -159,7 +162,10 @@ class _DeviceScanScreenState extends State<DeviceScanScreen>
 
   Widget _buildRetryButton(BuildContext context) {
     return ElevatedButton.icon(
-      onPressed: _startScan,
+      onPressed: () {
+        _navigated = false; // يسمح بإعادة التنقل لو عمل Scan تاني
+        _startScan();
+      },
       icon: const Icon(Icons.refresh),
       label: const Text('Scan Again'),
       style: ElevatedButton.styleFrom(
