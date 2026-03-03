@@ -34,6 +34,8 @@ class LgWebOsDriver extends TvDriver {
   Completer<void>? _registeredCompleter;
   bool _isRegistered = false;
 
+  Completer<void>? _pointerReadyCompleter;
+
   LgWebOsDriver(this.ipAddress);
 
   @override
@@ -52,7 +54,7 @@ class LgWebOsDriver extends TvDriver {
   Future<void> _loadClientKey() async {
     final prefs = await SharedPreferences.getInstance();
     _clientKey = prefs.getString(_prefsKeyClientKey);
-    if (_clientKey != null && _clientKey!.isNotEmpty) {
+    if ((_clientKey ?? '').isNotEmpty) {
       AppLogger.i('LG: Loaded saved client-key');
     }
   }
@@ -72,6 +74,9 @@ class LgWebOsDriver extends TvDriver {
 
       _isRegistered = false;
       _registeredCompleter = Completer<void>();
+
+      _pointerReadyCompleter = Completer<void>();
+      _pointerPath = null;
 
       // ✅ endpoint الصحيح
       final url = 'ws://$ipAddress:${AppConstants.lgWebOsPort}/api/websocket';
@@ -99,36 +104,32 @@ class LgWebOsDriver extends TvDriver {
         cancelOnError: true,
       );
 
-      // Register (pairing)
-      await _sendRegistration();
+      // 1) جرّب PROMPT الأول
+      await _sendRegistration(pairingType: 'PROMPT');
 
-      // ✅ وقت أطول عشان الـ prompt على التلفزيون
-      await _registeredCompleter!.future.timeout(
-        const Duration(seconds: 30),
-        onTimeout: () {
+      // نستنى registered — وقت أطول عشان التلفزيون يطلع رسالة
+      final registered = await _waitRegistered(seconds: 18);
+
+      // 2) لو ماحصلش registered جرّب PIN fallback (بعض موديلات)
+      if (!registered) {
+        AppLogger.w('LG: PROMPT pairing timeout, trying PIN fallback...');
+        await _sendRegistration(pairingType: 'PIN');
+        final registered2 = await _waitRegistered(seconds: 25);
+        if (!registered2) {
           throw const ConnectionException(
-            'LG pairing لم يكتمل. وافق على رسالة الاقتران على التلفزيون ثم أعد المحاولة.',
+            'LG pairing لم يكتمل. تأكد من تفعيل LG Connect Apps / السماح بالاقتران على التلفزيون.',
           );
-        },
-      );
+        }
+      }
 
-      // Request pointer socket
+      // ✅ هنا بس نقول Connected
+      _setState(DriverState.connected);
+
+      // اطلب pointer socket (لكن بدون ما نفشل connect لو اتأخر)
       await _requestPointerSocket();
 
-      // ✅ نستنى pointer فعليًا (بدون ما نهنّج كتير)
-      int tries = 0;
-      while (_pointerSocket == null && tries < 30) {
-        await Future.delayed(const Duration(milliseconds: 120));
-        tries++;
-      }
-
-      if (_pointerSocket == null) {
-        throw const ConnectionException('LG pointer socket failed.');
-      }
-
-      _setState(DriverState.connected);
       _reconnectAttempts = 0;
-      AppLogger.i('LG: Connected + registered + pointer ready');
+      AppLogger.i('LG: Connected + registered');
     } on TimeoutException {
       _setState(DriverState.error);
       throw const ConnectionException('LG connection timed out');
@@ -136,6 +137,15 @@ class LgWebOsDriver extends TvDriver {
       _setState(DriverState.error);
       AppLogger.e('LG connect failed', e, st);
       throw ConnectionException('LG connect failed: $e');
+    }
+  }
+
+  Future<bool> _waitRegistered({required int seconds}) async {
+    try {
+      await _registeredCompleter!.future.timeout(Duration(seconds: seconds));
+      return true;
+    } catch (_) {
+      return _isRegistered;
     }
   }
 
@@ -152,16 +162,14 @@ class LgWebOsDriver extends TvDriver {
         }
 
         _isRegistered = true;
-        if (_registeredCompleter != null &&
-            !_registeredCompleter!.isCompleted) {
+        if (_registeredCompleter != null && !_registeredCompleter!.isCompleted) {
           _registeredCompleter!.complete();
         }
         return;
       }
 
       final uri = msg['uri'];
-      if (uri ==
-          'ssap://com.webos.service.networkinput/getPointerInputSocket') {
+      if (uri == 'ssap://com.webos.service.networkinput/getPointerInputSocket') {
         final payload = msg['payload'];
         final path = (payload is Map) ? payload['socketPath'] : null;
         if (path is String && path.isNotEmpty) {
@@ -175,15 +183,14 @@ class LgWebOsDriver extends TvDriver {
     }
   }
 
-  Future<void> _sendRegistration() async {
+  Future<void> _sendRegistration({required String pairingType}) async {
     await _sendRaw({
       'id': 'register_0',
       'type': 'register',
       'payload': {
         'forcePairing': false,
-        'pairingType': 'PROMPT',
-        if (_clientKey != null && _clientKey!.isNotEmpty) 'client-key': _clientKey,
-        // ✅ رجّعنا manifest/permissions (التبسيط كان بيكسر التنفيذ على موديلات)
+        'pairingType': pairingType,
+        if ((_clientKey ?? '').isNotEmpty) 'client-key': _clientKey,
         'manifest': {
           'manifestVersion': 1,
           'appVersion': '1.0',
@@ -219,7 +226,7 @@ class LgWebOsDriver extends TvDriver {
   }
 
   Future<void> _connectPointerSocket() async {
-    if (_pointerPath == null || _pointerPath!.isEmpty) return;
+    if ((_pointerPath ?? '').isEmpty) return;
 
     final url = _pointerPath!.startsWith('ws://')
         ? _pointerPath!
@@ -233,6 +240,10 @@ class LgWebOsDriver extends TvDriver {
     _pointerSocket =
         await WebSocket.connect(url).timeout(AppConstants.connectTimeout);
 
+    if (_pointerReadyCompleter != null && !_pointerReadyCompleter!.isCompleted) {
+      _pointerReadyCompleter!.complete();
+    }
+
     _pointerSocket!.listen(
       (data) => AppLogger.d('LG PTR RX: $data'),
       onError: (e, st) => AppLogger.e('LG Pointer socket error', e, st),
@@ -244,25 +255,29 @@ class LgWebOsDriver extends TvDriver {
   Future<void> _sendRaw(Map<String, dynamic> payload) async {
     final s = _ssapSocket;
     if (s == null) return;
-    try {
-      s.add(jsonEncode(payload));
-    } catch (e, st) {
-      AppLogger.e('LG: sendRaw failed', e, st);
-      _setState(DriverState.error);
-      _scheduleReconnect();
-    }
+    s.add(jsonEncode(payload));
   }
 
   // ✅ pointer socket = TEXT protocol
   Future<void> _sendPointerButton(String name) async {
-    if (_pointerSocket == null) return;
-    final msg = 'type:button\nname:$name\n\n';
-    try {
-      _pointerSocket!.add(msg);
-      AppLogger.d('LG PTR TX: $msg');
-    } catch (e, st) {
-      AppLogger.e('LG: sendPointerButton failed', e, st);
+    // لو pointer مش جاهز: اطلبه واستنى شوية بسيطة
+    if (_pointerSocket == null) {
+      await _requestPointerSocket();
+      try {
+        await _pointerReadyCompleter?.future
+            .timeout(const Duration(milliseconds: 1200));
+      } catch (_) {}
     }
+
+    final p = _pointerSocket;
+    if (p == null) {
+      AppLogger.w('LG: Pointer socket still not ready, drop $name');
+      return;
+    }
+
+    final msg = 'type:button\nname:$name\n\n';
+    p.add(msg);
+    AppLogger.d('LG PTR TX: $msg');
   }
 
   @override
@@ -378,6 +393,7 @@ class LgWebOsDriver extends TvDriver {
     await _closeSockets();
     _isRegistered = false;
     _registeredCompleter = null;
+    _pointerReadyCompleter = null;
     _setState(DriverState.disconnected);
   }
 }
