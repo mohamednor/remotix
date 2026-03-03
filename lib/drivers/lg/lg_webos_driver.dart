@@ -52,12 +52,16 @@ class LgWebOsDriver extends TvDriver {
   Future<void> _loadClientKey() async {
     final prefs = await SharedPreferences.getInstance();
     _clientKey = prefs.getString(_prefsKeyClientKey);
+    if (_clientKey != null && _clientKey!.isNotEmpty) {
+      AppLogger.i('LG: Loaded saved client-key');
+    }
   }
 
   Future<void> _saveClientKey(String key) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_prefsKeyClientKey, key);
     _clientKey = key;
+    AppLogger.i('LG: Saved client-key');
   }
 
   @override
@@ -69,8 +73,9 @@ class LgWebOsDriver extends TvDriver {
       _isRegistered = false;
       _registeredCompleter = Completer<void>();
 
-      final url =
-          'ws://$ipAddress:${AppConstants.lgWebOsPort}/api/websocket';
+      // ✅ endpoint الصحيح
+      final url = 'ws://$ipAddress:${AppConstants.lgWebOsPort}/api/websocket';
+      AppLogger.i('LG: Connecting to $url');
 
       await _closeSockets();
 
@@ -78,33 +83,42 @@ class LgWebOsDriver extends TvDriver {
           await WebSocket.connect(url).timeout(AppConstants.connectTimeout);
 
       _ssapSocket!.listen(
-        (data) async => await _handleMessage(data),
-        onError: (e, st) {
+        (data) async {
+          AppLogger.d('LG RX: $data');
+          await _handleMessage(data);
+        },
+        onError: (Object e, StackTrace st) {
+          AppLogger.e('LG WebSocket error', e, st);
           _setState(DriverState.error);
+          _scheduleReconnect();
         },
         onDone: () {
+          AppLogger.w('LG WebSocket closed');
           _setState(DriverState.disconnected);
         },
         cancelOnError: true,
       );
 
+      // Register (pairing)
       await _sendRegistration();
 
-      // نستنى registered
+      // ✅ وقت أطول عشان الـ prompt على التلفزيون
       await _registeredCompleter!.future.timeout(
-        const Duration(seconds: 12),
+        const Duration(seconds: 30),
         onTimeout: () {
           throw const ConnectionException(
-              'LG pairing لم يكتمل. وافق على التلفزيون.');
+            'LG pairing لم يكتمل. وافق على رسالة الاقتران على التلفزيون ثم أعد المحاولة.',
+          );
         },
       );
 
+      // Request pointer socket
       await _requestPointerSocket();
 
-      // ✅ نستنى pointer socket يفتح فعليًا
+      // ✅ نستنى pointer فعليًا (بدون ما نهنّج كتير)
       int tries = 0;
-      while (_pointerSocket == null && tries < 20) {
-        await Future.delayed(const Duration(milliseconds: 150));
+      while (_pointerSocket == null && tries < 30) {
+        await Future.delayed(const Duration(milliseconds: 120));
         tries++;
       }
 
@@ -114,37 +128,51 @@ class LgWebOsDriver extends TvDriver {
 
       _setState(DriverState.connected);
       _reconnectAttempts = 0;
-    } catch (e) {
+      AppLogger.i('LG: Connected + registered + pointer ready');
+    } on TimeoutException {
       _setState(DriverState.error);
-      rethrow;
+      throw const ConnectionException('LG connection timed out');
+    } catch (e, st) {
+      _setState(DriverState.error);
+      AppLogger.e('LG connect failed', e, st);
+      throw ConnectionException('LG connect failed: $e');
     }
   }
 
   Future<void> _handleMessage(dynamic data) async {
     try {
-      final msg = jsonDecode(data.toString());
+      final msg = jsonDecode(data.toString()) as Map<String, dynamic>;
       final type = msg['type'];
 
       if (type == 'registered') {
-        final key = msg['payload']?['client-key'];
-        if (key != null) await _saveClientKey(key);
+        final payload = msg['payload'];
+        final key = (payload is Map) ? payload['client-key'] : null;
+        if (key is String && key.isNotEmpty) {
+          await _saveClientKey(key);
+        }
 
         _isRegistered = true;
-        if (!_registeredCompleter!.isCompleted) {
+        if (_registeredCompleter != null &&
+            !_registeredCompleter!.isCompleted) {
           _registeredCompleter!.complete();
         }
         return;
       }
 
-      if (msg['uri'] ==
+      final uri = msg['uri'];
+      if (uri ==
           'ssap://com.webos.service.networkinput/getPointerInputSocket') {
-        final path = msg['payload']?['socketPath'];
-        if (path != null) {
+        final payload = msg['payload'];
+        final path = (payload is Map) ? payload['socketPath'] : null;
+        if (path is String && path.isNotEmpty) {
           _pointerPath = path;
+          AppLogger.i('LG: Got pointer socketPath: $_pointerPath');
           await _connectPointerSocket();
         }
       }
-    } catch (_) {}
+    } catch (_) {
+      // ignore
+    }
   }
 
   Future<void> _sendRegistration() async {
@@ -152,8 +180,31 @@ class LgWebOsDriver extends TvDriver {
       'id': 'register_0',
       'type': 'register',
       'payload': {
+        'forcePairing': false,
         'pairingType': 'PROMPT',
-        if (_clientKey != null) 'client-key': _clientKey,
+        if (_clientKey != null && _clientKey!.isNotEmpty) 'client-key': _clientKey,
+        // ✅ رجّعنا manifest/permissions (التبسيط كان بيكسر التنفيذ على موديلات)
+        'manifest': {
+          'manifestVersion': 1,
+          'appVersion': '1.0',
+          'signed': {
+            'created': '20260301',
+            'appId': 'com.remotix.app',
+            'vendorId': 'com.remotix',
+            'localizedAppNames': {'': 'Remotix'},
+            'localizedVendorNames': {'': 'Remotix'},
+            'permissions': [
+              'CONTROL_POWER',
+              'CONTROL_INPUT_TEXT',
+              'CONTROL_MOUSE_AND_KEYBOARD',
+              'READ_RUNNING_APPS',
+              'READ_INSTALLED_APPS',
+              'READ_CURRENT_CHANNEL',
+              'SEARCH',
+              'READ_NOTIFICATIONS',
+            ],
+          },
+        },
       },
     });
   }
@@ -162,39 +213,62 @@ class LgWebOsDriver extends TvDriver {
     await _sendRaw({
       'id': 'ptr_${++_messageId}',
       'type': 'request',
-      'uri':
-          'ssap://com.webos.service.networkinput/getPointerInputSocket',
+      'uri': 'ssap://com.webos.service.networkinput/getPointerInputSocket',
       'payload': {},
     });
   }
 
   Future<void> _connectPointerSocket() async {
-    if (_pointerPath == null) return;
+    if (_pointerPath == null || _pointerPath!.isEmpty) return;
 
     final url = _pointerPath!.startsWith('ws://')
         ? _pointerPath!
         : 'ws://$ipAddress:${AppConstants.lgWebOsPort}${_pointerPath!}';
 
+    try {
+      await _pointerSocket?.close();
+    } catch (_) {}
+
+    AppLogger.i('LG: Connecting pointer socket: $url');
     _pointerSocket =
         await WebSocket.connect(url).timeout(AppConstants.connectTimeout);
 
-    _pointerSocket!.listen((_) {});
+    _pointerSocket!.listen(
+      (data) => AppLogger.d('LG PTR RX: $data'),
+      onError: (e, st) => AppLogger.e('LG Pointer socket error', e, st),
+      onDone: () => AppLogger.w('LG Pointer socket closed'),
+      cancelOnError: true,
+    );
   }
 
   Future<void> _sendRaw(Map<String, dynamic> payload) async {
-    _ssapSocket?.add(jsonEncode(payload));
+    final s = _ssapSocket;
+    if (s == null) return;
+    try {
+      s.add(jsonEncode(payload));
+    } catch (e, st) {
+      AppLogger.e('LG: sendRaw failed', e, st);
+      _setState(DriverState.error);
+      _scheduleReconnect();
+    }
   }
 
+  // ✅ pointer socket = TEXT protocol
   Future<void> _sendPointerButton(String name) async {
     if (_pointerSocket == null) return;
-
     final msg = 'type:button\nname:$name\n\n';
-    _pointerSocket!.add(msg);
+    try {
+      _pointerSocket!.add(msg);
+      AppLogger.d('LG PTR TX: $msg');
+    } catch (e, st) {
+      AppLogger.e('LG: sendPointerButton failed', e, st);
+    }
   }
 
   @override
   Future<void> sendCommand(TvCommand command) async {
-    if (!isConnected || !_isRegistered) return;
+    if (!isConnected) throw const DriverException('Not connected');
+    if (!_isRegistered) throw const DriverException('LG pairing not completed');
 
     switch (command) {
       case TvCommand.power:
@@ -211,6 +285,7 @@ class LgWebOsDriver extends TvDriver {
           'id': 'cmd_${++_messageId}',
           'type': 'request',
           'uri': 'ssap://audio/volumeUp',
+          'payload': {},
         });
         break;
 
@@ -219,6 +294,7 @@ class LgWebOsDriver extends TvDriver {
           'id': 'cmd_${++_messageId}',
           'type': 'request',
           'uri': 'ssap://audio/volumeDown',
+          'payload': {},
         });
         break;
 
@@ -237,6 +313,7 @@ class LgWebOsDriver extends TvDriver {
           'id': 'cmd_${++_messageId}',
           'type': 'request',
           'uri': 'ssap://tv/channelUp',
+          'payload': {},
         });
         break;
 
@@ -245,6 +322,7 @@ class LgWebOsDriver extends TvDriver {
           'id': 'cmd_${++_messageId}',
           'type': 'request',
           'uri': 'ssap://tv/channelDown',
+          'payload': {},
         });
         break;
 
@@ -272,9 +350,25 @@ class LgWebOsDriver extends TvDriver {
     }
   }
 
+  void _scheduleReconnect() {
+    if (_reconnectAttempts >= AppConstants.maxReconnectAttempts) return;
+    _reconnectAttempts++;
+    Future.delayed(AppConstants.reconnectDelay, () async {
+      try {
+        await connect();
+      } catch (e, st) {
+        AppLogger.e('LG reconnect failed', e, st);
+      }
+    });
+  }
+
   Future<void> _closeSockets() async {
-    await _pointerSocket?.close();
-    await _ssapSocket?.close();
+    try {
+      await _pointerSocket?.close();
+    } catch (_) {}
+    try {
+      await _ssapSocket?.close();
+    } catch (_) {}
     _pointerSocket = null;
     _ssapSocket = null;
   }
