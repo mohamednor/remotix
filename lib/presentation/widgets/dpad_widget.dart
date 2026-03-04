@@ -1,12 +1,10 @@
 // lib/presentation/widgets/dpad_widget.dart
-
 import 'package:flutter/material.dart';
 import '../../domain/entities/tv_command.dart';
 import 'remote_button.dart';
 
 class DPadWidget extends StatelessWidget {
-  final void Function(TvCommand) onCommand;
-
+  final Future<void> Function(TvCommand) onCommand; // ✅ كان void — بقى Future<void>
   const DPadWidget({super.key, required this.onCommand});
 
   static const _accent = Color(0xFF6C63FF);
@@ -19,7 +17,6 @@ class DPadWidget extends StatelessWidget {
       child: Stack(
         alignment: Alignment.center,
         children: [
-          // Background circle
           Container(
             width: 200,
             height: 200,
@@ -40,7 +37,6 @@ class DPadWidget extends StatelessWidget {
               ],
             ),
           ),
-          // Up
           Positioned(
             top: 8,
             child: RemoteButton(
@@ -49,7 +45,6 @@ class DPadWidget extends StatelessWidget {
               child: const Icon(Icons.keyboard_arrow_up, color: Colors.white70, size: 28),
             ),
           ),
-          // Down
           Positioned(
             bottom: 8,
             child: RemoteButton(
@@ -58,7 +53,6 @@ class DPadWidget extends StatelessWidget {
               child: const Icon(Icons.keyboard_arrow_down, color: Colors.white70, size: 28),
             ),
           ),
-          // Left
           Positioned(
             left: 8,
             child: RemoteButton(
@@ -67,7 +61,6 @@ class DPadWidget extends StatelessWidget {
               child: const Icon(Icons.keyboard_arrow_left, color: Colors.white70, size: 28),
             ),
           ),
-          // Right
           Positioned(
             right: 8,
             child: RemoteButton(
@@ -76,7 +69,6 @@ class DPadWidget extends StatelessWidget {
               child: const Icon(Icons.keyboard_arrow_right, color: Colors.white70, size: 28),
             ),
           ),
-          // Center OK
           RemoteButton(
             size: 64,
             color: _accent,
