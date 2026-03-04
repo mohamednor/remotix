@@ -32,12 +32,20 @@ class _PinEntryScreenState extends State<PinEntryScreen> {
     setState(() { _loading = true; _error = null; });
 
     try {
-      await widget.driver.submitPin(pin);
-      if (mounted) Navigator.of(context).pop(true);
+      final ok = await widget.driver.submitPin(pin);
+      if (!mounted) return;
+      if (ok) {
+        Navigator.of(context).pop(true);
+      } else {
+        setState(() {
+          _error = 'PIN خاطئ، حاول مرة أخرى';
+          _loading = false;
+        });
+      }
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = 'PIN خاطئ، حاول مرة أخرى';
+          _error = 'حدث خطأ، حاول مرة أخرى';
           _loading = false;
         });
       }
@@ -71,7 +79,6 @@ class _PinEntryScreenState extends State<PinEntryScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // أيقونة
             Container(
               width: 88,
               height: 88,
@@ -79,11 +86,7 @@ class _PinEntryScreenState extends State<PinEntryScreen> {
                 color: _accent.withOpacity(0.15),
                 shape: BoxShape.circle,
               ),
-              child: const Icon(
-                Icons.tv_rounded,
-                color: _accent,
-                size: 44,
-              ),
+              child: const Icon(Icons.tv_rounded, color: _accent, size: 44),
             ),
 
             const SizedBox(height: 32),
@@ -91,10 +94,9 @@ class _PinEntryScreenState extends State<PinEntryScreen> {
             const Text(
               'أدخل رمز PIN',
               style: TextStyle(
-                color: Colors.white,
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-              ),
+                  color: Colors.white,
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold),
             ),
 
             const SizedBox(height: 12),
@@ -103,15 +105,11 @@ class _PinEntryScreenState extends State<PinEntryScreen> {
               'ظهر رمز على شاشة التلفزيون\nأدخله هنا للاقتران',
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: Color(0xFF9090B0),
-                fontSize: 14,
-                height: 1.6,
-              ),
+                  color: Color(0xFF9090B0), fontSize: 14, height: 1.6),
             ),
 
             const SizedBox(height: 40),
 
-            // حقل الـ PIN
             TextField(
               controller: _controller,
               keyboardType: TextInputType.number,
@@ -151,7 +149,6 @@ class _PinEntryScreenState extends State<PinEntryScreen> {
 
             const SizedBox(height: 32),
 
-            // زر التأكيد
             SizedBox(
               width: double.infinity,
               height: 56,
@@ -161,25 +158,20 @@ class _PinEntryScreenState extends State<PinEntryScreen> {
                   backgroundColor: _accent,
                   disabledBackgroundColor: _accent.withOpacity(0.4),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
+                      borderRadius: BorderRadius.circular(16)),
                 ),
                 child: _loading
                     ? const SizedBox(
-                        width: 24,
-                        height: 24,
+                        width: 24, height: 24,
                         child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
-                        ),
+                            strokeWidth: 2, color: Colors.white),
                       )
                     : const Text(
                         'تأكيد',
                         style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold),
                       ),
               ),
             ),
