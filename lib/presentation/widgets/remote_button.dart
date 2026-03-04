@@ -1,11 +1,10 @@
 // lib/presentation/widgets/remote_button.dart
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 class RemoteButton extends StatefulWidget {
   final Widget child;
-  final VoidCallback? onTap;
+  final AsyncCallback? onTap; // ✅ كان VoidCallback — بقى AsyncCallback
   final double size;
   final Color? color;
   final bool isCircle;
@@ -54,10 +53,11 @@ class _RemoteButtonState extends State<RemoteButton>
     _controller.forward();
   }
 
-  void _onTapUp(TapUpDetails _) {
+  // ✅ بقى async عشان ينتظر onTap() وياخد أي exception
+  Future<void> _onTapUp(TapUpDetails _) async {
     _controller.reverse();
     HapticFeedback.lightImpact();
-    widget.onTap?.call();
+    await widget.onTap?.call();
   }
 
   void _onTapCancel() {
@@ -79,7 +79,8 @@ class _RemoteButtonState extends State<RemoteButton>
           decoration: BoxDecoration(
             color: bg,
             shape: widget.isCircle ? BoxShape.circle : BoxShape.rectangle,
-            borderRadius: widget.isCircle ? null : BorderRadius.circular(14),
+            borderRadius:
+                widget.isCircle ? null : BorderRadius.circular(14),
             boxShadow: const [
               BoxShadow(
                 color: _shadowDark,
