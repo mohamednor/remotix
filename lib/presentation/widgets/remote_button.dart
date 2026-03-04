@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 
 class RemoteButton extends StatefulWidget {
   final Widget child;
-  final AsyncCallback? onTap; // ✅ كان VoidCallback — بقى AsyncCallback
+  final Future<void> Function()? onTap;
   final double size;
   final Color? color;
   final bool isCircle;
@@ -49,20 +49,15 @@ class _RemoteButtonState extends State<RemoteButton>
     super.dispose();
   }
 
-  void _onTapDown(TapDownDetails _) {
-    _controller.forward();
-  }
+  void _onTapDown(TapDownDetails _) => _controller.forward();
 
-  // ✅ بقى async عشان ينتظر onTap() وياخد أي exception
   Future<void> _onTapUp(TapUpDetails _) async {
     _controller.reverse();
     HapticFeedback.lightImpact();
     await widget.onTap?.call();
   }
 
-  void _onTapCancel() {
-    _controller.reverse();
-  }
+  void _onTapCancel() => _controller.reverse();
 
   @override
   Widget build(BuildContext context) {
