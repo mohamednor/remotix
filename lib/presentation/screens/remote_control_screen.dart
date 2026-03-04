@@ -1,5 +1,4 @@
 // lib/presentation/screens/remote_control_screen.dart
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -24,24 +23,23 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
 
   String? _errorMsg;
 
-  // ✅ الإصلاح الرئيسي: sendCommand async مع catch حقيقي
+  // ✅ async مع try/catch حقيقي — بيعرض الـ error في الشاشة
   Future<void> _send(TvCommand cmd) async {
     final provider = context.read<DeviceProvider>();
     try {
       await provider.sendCommand(cmd);
-      // لو نجح امسح الـ error القديم
       if (_errorMsg != null && mounted) {
         setState(() => _errorMsg = null);
       }
     } catch (e) {
-      final msg = e.toString()
+      AppLogger.e('RemoteScreen: sendCommand failed', e);
+      final msg = e
+          .toString()
           .replaceAll('Exception:', '')
           .replaceAll('DriverException:', '')
           .trim();
-      AppLogger.e('RemoteScreen: sendCommand error', e);
       if (mounted) {
         setState(() => _errorMsg = msg);
-        // امسح الـ error بعد 4 ثواني
         Future.delayed(const Duration(seconds: 4), () {
           if (mounted) setState(() => _errorMsg = null);
         });
@@ -74,16 +72,14 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
             Text(
               device?.displayName ?? 'Remote',
               style: const TextStyle(
-                color: Colors.white,
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-              ),
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600),
             ),
             _ConnectionStatus(state: driverState),
           ],
         ),
         actions: [
-          // زر reconnect لو في error
           if (driverState == DriverState.error ||
               driverState == DriverState.disconnected)
             IconButton(
@@ -98,24 +94,22 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // ── Error banner ──
+            // Error banner
             if (_errorMsg != null)
               Container(
                 width: double.infinity,
                 color: const Color(0xFFE53935).withOpacity(0.18),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 10),
                 child: Row(
                   children: [
                     const Icon(Icons.error_outline_rounded,
                         color: Color(0xFFFF6584), size: 18),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text(
-                        _errorMsg!,
-                        style: const TextStyle(
-                            color: Color(0xFFFF6584), fontSize: 13),
-                      ),
+                      child: Text(_errorMsg!,
+                          style: const TextStyle(
+                              color: Color(0xFFFF6584), fontSize: 13)),
                     ),
                     GestureDetector(
                       onTap: () => setState(() => _errorMsg = null),
@@ -126,13 +120,13 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
                 ),
               ),
 
-            // ── Connecting banner ──
+            // Connecting banner
             if (driverState == DriverState.connecting)
               Container(
                 width: double.infinity,
                 color: _accent.withOpacity(0.12),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 8),
                 child: const Row(
                   children: [
                     SizedBox(
@@ -143,16 +137,16 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
                     ),
                     SizedBox(width: 10),
                     Text('جاري الاتصال...',
-                        style: TextStyle(color: _accent, fontSize: 12)),
+                        style:
+                            TextStyle(color: _accent, fontSize: 12)),
                   ],
                 ),
               ),
 
-            // ── Main remote UI ──
             Expanded(
               child: SingleChildScrollView(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 24, vertical: 16),
                 child: Column(
                   children: [
                     _buildPowerButton(),
@@ -181,11 +175,8 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
         size: 68,
         color: const Color(0xFFE53935),
         onTap: () => _send(TvCommand.power),
-        child: const Icon(
-          Icons.power_settings_new_rounded,
-          color: Colors.white,
-          size: 32,
-        ),
+        child: const Icon(Icons.power_settings_new_rounded,
+            color: Colors.white, size: 32),
       ),
     );
   }
@@ -233,14 +224,16 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
     required String label,
     required IconData topIcon,
     required IconData bottomIcon,
-    required VoidCallback onTop,
-    required VoidCallback onBottom,
+    required AsyncCallback onTop,
+    required AsyncCallback onBottom,
   }) {
     return Column(
       children: [
         Text(label,
             style: const TextStyle(
-                color: Color(0xFF9090B0), fontSize: 10, letterSpacing: 1)),
+                color: Color(0xFF9090B0),
+                fontSize: 10,
+                letterSpacing: 1)),
         const SizedBox(height: 8),
         RemoteButton(
             size: 52,
@@ -277,7 +270,7 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
   Widget _buildIconLabel({
     required IconData icon,
     required String label,
-    required VoidCallback onTap,
+    required AsyncCallback onTap,
     Color? color,
   }) {
     return Column(
@@ -291,7 +284,9 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
         const SizedBox(height: 6),
         Text(label,
             style: const TextStyle(
-                color: Color(0xFF9090B0), fontSize: 10, letterSpacing: 1)),
+                color: Color(0xFF9090B0),
+                fontSize: 10,
+                letterSpacing: 1)),
       ],
     );
   }
@@ -304,9 +299,9 @@ class _ConnectionStatus extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (Color color, String label) = switch (state) {
-      DriverState.connected => (const Color(0xFF43E97B), 'Connected'),
-      DriverState.connecting => (const Color(0xFFFFB347), 'Connecting…'),
-      DriverState.error => (const Color(0xFFFF6584), 'Error'),
+      DriverState.connected    => (const Color(0xFF43E97B), 'Connected'),
+      DriverState.connecting   => (const Color(0xFFFFB347), 'Connecting…'),
+      DriverState.error        => (const Color(0xFFFF6584), 'Error'),
       DriverState.disconnected => (const Color(0xFF9090B0), 'Disconnected'),
     };
 
@@ -315,7 +310,8 @@ class _ConnectionStatus extends StatelessWidget {
         Container(
             width: 6,
             height: 6,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+            decoration:
+                BoxDecoration(color: color, shape: BoxShape.circle)),
         const SizedBox(width: 5),
         Text(label, style: TextStyle(color: color, fontSize: 11)),
       ],
