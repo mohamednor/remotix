@@ -12,9 +12,6 @@ import '../../core/utils/app_logger.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/error/exceptions.dart';
 
-/// حالة الـ pairing
-enum LgPairingState { none, waitingPin, paired, failed }
-
 class LgWebOsDriver extends TvDriver {
   final String ipAddress;
 
@@ -24,13 +21,7 @@ class LgWebOsDriver extends TvDriver {
   final StreamController<DriverState> _stateController =
       StreamController<DriverState>.broadcast();
 
-  // ✅ stream للـ pairing state عشان الـ UI يعرف يعرض شاشة الـ PIN
-  final StreamController<LgPairingState> _pairingController =
-      StreamController<LgPairingState>.broadcast();
-
   DriverState _state = DriverState.disconnected;
-  LgPairingState _pairingState = LgPairingState.none;
-
   int _messageId = 0;
   int _reconnectAttempts = 0;
 
@@ -40,8 +31,6 @@ class LgWebOsDriver extends TvDriver {
   bool _isRegistered = false;
 
   Completer<void>? _registeredCompleter;
-  // ✅ Completer ينتظر المستخدم يدخل الـ PIN
-  Completer<String>? _pinCompleter;
 
   LgWebOsDriver(this.ipAddress);
 
@@ -51,23 +40,24 @@ class LgWebOsDriver extends TvDriver {
   @override
   Stream<DriverState> get stateStream => _stateController.stream;
 
-  Stream<LgPairingState> get pairingStream => _pairingController.stream;
-  LgPairingState get pairingState => _pairingState;
-
   void _setState(DriverState s) {
     if (_state == s) return;
     _state = s;
     if (!_stateController.isClosed) _stateController.add(s);
   }
 
-  void _setPairing(LgPairingState s) {
-    _pairingState = s;
-    if (!_pairingController.isClosed) _pairingController.add(s);
-  }
-
   String get _prefsKey => 'lg_key_$ipAddress';
 
-  // ─── Storage ──────────────────────────────────────────────────────
+  // ✅ الـ provider بيستخدمه عشان يعرف يعرض شاشة PIN ولا لأ
+  Future<bool> hasSavedKey() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      final key = p.getString(_prefsKey);
+      return key != null && key.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
 
   Future<void> _loadKey() async {
     try {
@@ -100,13 +90,11 @@ class LgWebOsDriver extends TvDriver {
   @override
   Future<void> connect() async {
     _setState(DriverState.connecting);
-    _setPairing(LgPairingState.none);
     _isRegistered = false;
 
     await _loadKey();
     await _closeAll();
 
-    // ── فتح socket ──
     WebSocket ws;
     try {
       ws = await WebSocket.connect(
@@ -148,13 +136,11 @@ class LgWebOsDriver extends TvDriver {
       cancelOnError: false,
     );
 
-    // ── Register بالـ PIN ──
     _sendRegister(force: false);
 
     final hasKey = (_clientKey ?? '').isNotEmpty;
-
-    // لو عنده key محفوظ → بيرد بسرعة
-    // لو مفيش key → التلفزيون هيعرض PIN وننتظر المستخدم يدخله
+    // لو عنده key → بيرد بسرعة
+    // لو PIN → المستخدم بيكتب الـ PIN والـ registered بييجي بعدها
     bool ok = await _waitReg(hasKey ? 8 : 120);
 
     if (!ok && hasKey) {
@@ -167,7 +153,6 @@ class LgWebOsDriver extends TvDriver {
     }
 
     if (!ok) {
-      _setPairing(LgPairingState.failed);
       _setState(DriverState.error);
       throw const ConnectionException(
         'LG: انتهت مهلة الاقتران. أعد المحاولة.',
@@ -179,7 +164,6 @@ class LgWebOsDriver extends TvDriver {
       throw const ConnectionException('LG: socket closed after registration');
     }
 
-    _setPairing(LgPairingState.paired);
     _setState(DriverState.connected);
     _reconnectAttempts = 0;
     AppLogger.i('LG: READY ✅');
@@ -192,7 +176,7 @@ class LgWebOsDriver extends TvDriver {
   void _sendRegister({required bool force}) {
     final payload = <String, dynamic>{
       'forcePairing': force,
-      'pairingType': 'PIN',   // ✅ PIN بدل PROMPT
+      'pairingType': 'PIN',
       'manifest': {
         'manifestVersion': 1,
         'appVersion': '1.1',
@@ -224,17 +208,22 @@ class LgWebOsDriver extends TvDriver {
     _tx({'id': 'reg_0', 'type': 'register', 'payload': payload});
   }
 
-  /// ✅ إرسال الـ PIN للتلفزيون
-  Future<void> submitPin(String pin) async {
-    AppLogger.i('LG: submitting PIN=$pin');
+  // ✅ الـ UI بيستدعي الدالة دي لما المستخدم يكتب الـ PIN
+  Future<bool> submitPin(String pin) async {
+    AppLogger.i('LG: submitting PIN');
     _tx({
       'id': 'pin_${++_messageId}',
       'type': 'request',
       'uri': 'ssap://pairing/setPin',
       'payload': {'pin': pin},
     });
-    // أعطِ التلفزيون وقت للرد
-    await Future.delayed(const Duration(milliseconds: 500));
+    // انتظر registered confirmation
+    try {
+      await Future.delayed(const Duration(seconds: 2));
+      return _isRegistered;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<bool> _waitReg(int secs) async {
@@ -269,14 +258,13 @@ class LgWebOsDriver extends TvDriver {
           _registeredCompleter!.complete();
         }
 
-      case 'response':
-        // ✅ التلفزيون بعت pairing challenge → اعرض شاشة الـ PIN
-        final returnValue = msg['returnValue'];
-        if (returnValue == true || returnValue == 'true') {
-          // رد ناجح على setPin → اكتمل الـ pairing
-          AppLogger.i('LG: PIN accepted');
+      case 'error':
+        AppLogger.w('LG: error ← $raw');
+        if (_registeredCompleter?.isCompleted == false) {
+          _registeredCompleter!.completeError('LG error');
         }
 
+      case 'response':
         final uri = msg['uri'] as String? ?? '';
         if (uri.contains('getPointerInputSocket')) {
           final path = (msg['payload'] as Map?)?['socketPath'] as String?;
@@ -285,17 +273,6 @@ class LgWebOsDriver extends TvDriver {
             _connectPointer();
           }
         }
-
-      case 'error':
-        AppLogger.w('LG: error ← $raw');
-        if (_registeredCompleter?.isCompleted == false) {
-          _registeredCompleter!.completeError('LG error');
-        }
-
-      // ✅ التلفزيون بيطلب PIN
-      case 'pairing':
-        AppLogger.i('LG: pairing challenge received → show PIN screen');
-        _setPairing(LgPairingState.waitingPin);
     }
   }
 
@@ -318,7 +295,6 @@ class LgWebOsDriver extends TvDriver {
         ? path
         : 'ws://$ipAddress:${AppConstants.lgWebOsPort}$path';
 
-    AppLogger.i('LG: pointer → $url');
     try {
       await _pointerSocket?.close();
     } catch (_) {}
@@ -364,7 +340,6 @@ class LgWebOsDriver extends TvDriver {
       p.add('type:button\nname:$name\n\n');
       AppLogger.d('LG PTR ▶ $name');
     } else {
-      AppLogger.w('LG: pointer N/A, SSAP fallback: $name');
       _ssapFallback(name);
     }
   }
@@ -447,8 +422,6 @@ class LgWebOsDriver extends TvDriver {
     });
   }
 
-  // ─── Cleanup ──────────────────────────────────────────────────────
-
   Future<void> _closeAll() async {
     try { await _pointerSocket?.close(); } catch (_) {}
     try { await _socket?.close(); } catch (_) {}
@@ -461,7 +434,6 @@ class LgWebOsDriver extends TvDriver {
     _reconnectAttempts = AppConstants.maxReconnectAttempts;
     _isRegistered = false;
     _registeredCompleter = null;
-    _pinCompleter = null;
     await _closeAll();
     _setState(DriverState.disconnected);
   }
