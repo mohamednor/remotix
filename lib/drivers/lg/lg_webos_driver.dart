@@ -49,8 +49,6 @@ class LgWebOsDriver extends TvDriver {
 
   String get _prefsKey => 'lg_client_key_$ipAddress';
 
-  // ─── SharedPrefs ─────────────────────────────────────────────────────────────
-
   Future<void> _loadClientKey() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -83,8 +81,6 @@ class LgWebOsDriver extends TvDriver {
     }
   }
 
-  // ─── Connect ─────────────────────────────────────────────────────────────────
-
   @override
   Future<void> connect() async {
     _setState(DriverState.connecting);
@@ -95,7 +91,6 @@ class LgWebOsDriver extends TvDriver {
 
     await _closeSockets();
 
-    // ── فتح SSAP socket ──
     WebSocket socket;
     try {
       socket = await WebSocket.connect(
@@ -133,22 +128,22 @@ class LgWebOsDriver extends TvDriver {
       cancelOnError: true,
     );
 
-    // ── Register ──
     await _sendRegistration(force: false);
 
-    // لو عنده key محفوظ بيرد في أقل من 5 ثواني
-    // لو مفيش key، المستخدم لازم يوافق على التلفزيون
     final hasKey = (_clientKey ?? '').isNotEmpty;
-    bool registered = await _waitRegistered(hasKey ? 6 : 40);
+
+    // ✅ FIX: لو مفيش key → المستخدم هيوافق على التلفزيون
+    // بنستنى 60 ثانية عشان يوافق
+    bool registered = await _waitRegistered(hasKey ? 8 : 60);
 
     if (!registered && hasKey) {
-      // الـ key القديم اترفض — امسحه وأعد المحاولة
       AppLogger.w('LG: old key rejected — clearing and retrying');
       await _clearClientKey();
       _isRegistered = false;
       _registeredCompleter = Completer<void>();
       await _sendRegistration(force: true);
-      registered = await _waitRegistered(40);
+      // ✅ استنى 60 ثانية للموافقة
+      registered = await _waitRegistered(60);
     }
 
     if (!registered) {
@@ -159,17 +154,15 @@ class LgWebOsDriver extends TvDriver {
       );
     }
 
+    // ✅ بس بعد ما registered يتأكد نبعت connected
     _setState(DriverState.connected);
     _reconnectAttempts = 0;
     AppLogger.i('LG: connected & registered ✅');
 
-    // طلب pointer socket (اختياري — مش بيوقف الاتصال لو فشل)
     _requestPointerSocket().catchError(
       (Object e) => AppLogger.w('LG: pointer request failed: $e'),
     );
   }
-
-  // ─── Registration ────────────────────────────────────────────────────────────
 
   Future<void> _sendRegistration({required bool force}) async {
     final payload = <String, dynamic>{
@@ -215,8 +208,6 @@ class LgWebOsDriver extends TvDriver {
     }
   }
 
-  // ─── Message Handler ─────────────────────────────────────────────────────────
-
   Future<void> _handleMessage(String raw) async {
     AppLogger.d('LG RX: $raw');
 
@@ -260,8 +251,6 @@ class LgWebOsDriver extends TvDriver {
     }
   }
 
-  // ─── Pointer Socket ───────────────────────────────────────────────────────────
-
   Future<void> _requestPointerSocket() async {
     await _sendRaw({
       'id': 'ptr_${++_messageId}',
@@ -303,8 +292,6 @@ class LgWebOsDriver extends TvDriver {
     AppLogger.i('LG: pointer socket ready ✅');
   }
 
-  // ─── Send Helpers ─────────────────────────────────────────────────────────────
-
   Future<void> _sendRaw(Map<String, dynamic> payload) async {
     final s = _ssapSocket;
     if (s == null) {
@@ -321,12 +308,10 @@ class LgWebOsDriver extends TvDriver {
   }
 
   Future<void> _sendPointerButton(String name) async {
-    // طلب pointer لو مش جاهز
     if (_pointerSocket == null ||
         _pointerSocket!.readyState != WebSocket.open) {
       AppLogger.i('LG: pointer not ready — requesting');
       await _requestPointerSocket();
-      // انتظر قصير
       await Future.delayed(const Duration(milliseconds: 1500));
     }
 
@@ -361,18 +346,30 @@ class LgWebOsDriver extends TvDriver {
     }
   }
 
-  // ─── Commands ─────────────────────────────────────────────────────────────────
-
   @override
   Future<void> sendCommand(TvCommand command) async {
-    // ✅ الإصلاح الجوهري:
-    // بنتحقق من الـ socket مباشرة بدل _isRegistered
-    // لأن الأوامر تشتغل لو الـ socket مفتوح حتى لو registered event اتأخر
-    final s = _ssapSocket;
-    final socketOpen = s != null && s.readyState == WebSocket.open;
+    // ✅ FIX: لازم يكون registered فعلاً مش بس socket مفتوح
+    // لأن التلفزيون بيرفض الأوامر قبل اكتمال الـ pairing
+    if (!_isRegistered) {
+      AppLogger.w('LG: sendCommand blocked — not registered yet');
+      // ✅ لو socket مفتوح وبس مش registered → استنى شوية
+      if (_ssapSocket != null &&
+          _ssapSocket!.readyState == WebSocket.open &&
+          _registeredCompleter != null &&
+          !_registeredCompleter!.isCompleted) {
+        AppLogger.i('LG: waiting for registration to complete...');
+        try {
+          await _registeredCompleter!.future
+              .timeout(const Duration(seconds: 10));
+        } catch (_) {}
+      }
+      if (!_isRegistered) {
+        throw const DriverException('جاري إتمام الاقتران مع التلفزيون، انتظر...');
+      }
+    }
 
-    if (!socketOpen) {
-      AppLogger.w('LG: sendCommand blocked — socket not open (state=$_state, readyState=${s?.readyState})');
+    final s = _ssapSocket;
+    if (s == null || s.readyState != WebSocket.open) {
       throw DriverException('LG غير متصل (state: $_state)');
     }
 
@@ -438,8 +435,6 @@ class LgWebOsDriver extends TvDriver {
     }
   }
 
-  // ─── Reconnect ────────────────────────────────────────────────────────────────
-
   void _scheduleReconnect() {
     if (_reconnectAttempts >= AppConstants.maxReconnectAttempts) return;
     if (_state == DriverState.connecting) return;
@@ -453,8 +448,6 @@ class LgWebOsDriver extends TvDriver {
       }
     });
   }
-
-  // ─── Cleanup ──────────────────────────────────────────────────────────────────
 
   Future<void> _closeSockets() async {
     try { await _pointerSocket?.close(); } catch (_) {}
