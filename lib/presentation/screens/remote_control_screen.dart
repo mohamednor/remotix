@@ -23,7 +23,6 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
 
   String? _errorMsg;
 
-  // ✅ async مع try/catch حقيقي — بيعرض الـ error في الشاشة
   Future<void> _send(TvCommand cmd) async {
     final provider = context.read<DeviceProvider>();
     try {
@@ -94,7 +93,6 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Error banner
             if (_errorMsg != null)
               Container(
                 width: double.infinity,
@@ -120,7 +118,6 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
                 ),
               ),
 
-            // Connecting banner
             if (driverState == DriverState.connecting)
               Container(
                 width: double.infinity,
@@ -137,8 +134,7 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
                     ),
                     SizedBox(width: 10),
                     Text('جاري الاتصال...',
-                        style:
-                            TextStyle(color: _accent, fontSize: 12)),
+                        style: TextStyle(color: _accent, fontSize: 12)),
                   ],
                 ),
               ),
@@ -224,8 +220,8 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
     required String label,
     required IconData topIcon,
     required IconData bottomIcon,
-    required AsyncCallback onTop,
-    required AsyncCallback onBottom,
+    required Future<void> Function() onTop,
+    required Future<void> Function() onBottom,
   }) {
     return Column(
       children: [
@@ -270,7 +266,7 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
   Widget _buildIconLabel({
     required IconData icon,
     required String label,
-    required AsyncCallback onTap,
+    required Future<void> Function() onTap,
     Color? color,
   }) {
     return Column(
