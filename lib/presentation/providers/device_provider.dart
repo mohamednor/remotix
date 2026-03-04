@@ -1,6 +1,7 @@
 // lib/presentation/providers/device_provider.dart
 
 import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../../domain/entities/device.dart';
@@ -8,6 +9,8 @@ import '../../domain/entities/tv_command.dart';
 import '../../domain/usecases/discover_devices_usecase.dart';
 import '../../drivers/base/tv_driver.dart';
 import '../../drivers/base/driver_factory.dart';
+import '../../drivers/lg/lg_webos_driver.dart';
+import '../../drivers/samsung/samsung_tizen_driver.dart';
 import '../../core/utils/app_logger.dart';
 
 enum ScanState { idle, scanning, done, error }
@@ -18,17 +21,16 @@ class DeviceProvider extends ChangeNotifier {
   ScanState _scanState = ScanState.idle;
   final List<Device> _devices = [];
   Device? _selectedDevice;
-
   TvDriver? _driver;
   DriverState _driverState = DriverState.disconnected;
-
   String? _errorMessage;
   StreamSubscription<DriverState>? _driverStateSub;
 
-  // ✅ Guard ضد الضغط المتكرر
   bool _isSelecting = false;
 
   DeviceProvider(this._discoverUseCase);
+
+  // ─────────────────────────── Getters ──────────────────────────────
 
   ScanState get scanState => _scanState;
   List<Device> get devices => List.unmodifiable(_devices);
@@ -36,6 +38,19 @@ class DeviceProvider extends ChangeNotifier {
   DriverState get driverState => _driverState;
   String? get errorMessage => _errorMessage;
   bool get isConnected => _driverState == DriverState.connected;
+
+  /// ✅ NEW: expose driver للـ UI عشان يعرف pairing state
+  TvDriver? get currentDriver => _driver;
+
+  /// ✅ NEW: هل في انتظار موافقة على التلفزيون؟
+  bool get waitingForPairing {
+    final d = _driver;
+    if (d is LgWebOsDriver) return d.waitingForUserApproval;
+    if (d is SamsungTizenDriver) return d.waitingForApproval;
+    return false;
+  }
+
+  // ─────────────────────────── Scan ─────────────────────────────────
 
   Future<void> scanDevices() async {
     _scanState = ScanState.scanning;
@@ -59,16 +74,20 @@ class DeviceProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ─────────────────────────── Select & Connect ─────────────────────
+
   Future<void> selectDevice(Device device) async {
-    if (_isSelecting) return; // ✅ يمنع تكرار الضغط
+    if (_isSelecting) return;
     _isSelecting = true;
 
     try {
+      // إلغاء الاشتراك القديم
       await _driverStateSub?.cancel();
       _driverStateSub = null;
 
+      // تنظيف الـ driver القديم
       try {
-        await _driver?.dispose();
+        await _driver?.disconnect();
       } catch (_) {}
       _driver = null;
 
@@ -80,6 +99,7 @@ class DeviceProvider extends ChangeNotifier {
       final driver = DriverFactory.create(device);
       _driver = driver;
 
+      // ✅ FIX: اشترك في stream قبل ما connect() يترسل
       _driverStateSub = driver.stateStream.listen((state) {
         if (_driverState == state) return;
         _driverState = state;
@@ -87,48 +107,60 @@ class DeviceProvider extends ChangeNotifier {
       });
 
       await driver.connect();
+
+      // ✅ لو connect() رجع من غير exception، التلفزيون connected
+      _driverState = driver.state;
+      notifyListeners();
     } catch (e, st) {
-      AppLogger.e('Select/connect failed', e, st);
+      AppLogger.e('selectDevice failed', e, st);
       _driverState = DriverState.error;
-      _errorMessage = e.toString();
+      _errorMessage = e.toString().replaceAll('Exception:', '').trim();
       notifyListeners();
     } finally {
       _isSelecting = false;
     }
   }
 
+  // ─────────────────────────── Commands ─────────────────────────────
+
   Future<void> sendCommand(TvCommand command) async {
     final d = _driver;
-    if (d == null) return;
+    if (d == null) {
+      throw Exception('لا يوجد تلفزيون متصل');
+    }
 
     try {
       await d.sendCommand(command);
     } catch (e, st) {
-      AppLogger.e('Send command failed', e, st);
-      _errorMessage = e.toString();
-      notifyListeners();
+      AppLogger.e('sendCommand failed: $command', e, st);
+      // ✅ ارمي الـ exception للـ UI عشان يعرض error
+      rethrow;
     }
   }
+
+  // ─────────────────────────── Disconnect ───────────────────────────
 
   Future<void> disconnect() async {
     await _driverStateSub?.cancel();
     _driverStateSub = null;
 
     try {
-      await _driver?.dispose();
+      await _driver?.disconnect();
     } catch (_) {}
 
     _driver = null;
     _selectedDevice = null;
     _driverState = DriverState.disconnected;
+    _errorMessage = null;
     notifyListeners();
   }
+
+  // ─────────────────────────── Dispose ──────────────────────────────
 
   @override
   void dispose() {
     _driverStateSub?.cancel();
-    // ignore: discarded_futures
-    _driver?.dispose();
+    _driver?.disconnect().catchError((_) {});
     super.dispose();
   }
 }
