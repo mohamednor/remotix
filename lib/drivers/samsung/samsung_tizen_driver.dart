@@ -25,6 +25,10 @@ class SamsungTizenDriver extends TvDriver {
 
   String? _token;
 
+  // ✅ NEW: هل التلفزيون طلب موافقة؟
+  bool _waitingForApproval = false;
+  bool get waitingForApproval => _waitingForApproval;
+
   SamsungTizenDriver(this.ipAddress);
 
   @override
@@ -34,6 +38,7 @@ class SamsungTizenDriver extends TvDriver {
   Stream<DriverState> get stateStream => _stateController.stream;
 
   void _setState(DriverState s) {
+    if (_state == s) return;
     _state = s;
     if (!_stateController.isClosed) _stateController.add(s);
   }
@@ -56,120 +61,170 @@ class SamsungTizenDriver extends TvDriver {
     TvCommand.back: 'KEY_RETURN',
   };
 
+  // ─────────────────────────── SharedPrefs ───────────────────────────
+
   Future<void> _loadToken() async {
-    final prefs = await SharedPreferences.getInstance();
-    _token = prefs.getString(_prefsTokenKey);
-    if (_token != null && _token!.isNotEmpty) {
-      AppLogger.i('Samsung: Loaded token');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _token = prefs.getString(_prefsTokenKey);
+      if ((_token ?? '').isNotEmpty) AppLogger.i('Samsung: Loaded token');
+    } catch (e) {
+      AppLogger.w('Samsung: Could not load token: $e');
     }
   }
 
   Future<void> _saveToken(String token) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_prefsTokenKey, token);
-    _token = token;
-    AppLogger.i('Samsung: Saved token');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_prefsTokenKey, token);
+      _token = token;
+      AppLogger.i('Samsung: Saved token');
+    } catch (e) {
+      AppLogger.w('Samsung: Could not save token: $e');
+    }
   }
 
-  Future<WebSocket> _tryConnect(String url) async {
-    AppLogger.i('Samsung: Trying $url');
+  // ─────────────────────────── Connect ───────────────────────────────
+
+  Future<WebSocket> _openSocket(String url) async {
+    AppLogger.i('Samsung: Trying → $url');
     return WebSocket.connect(url).timeout(AppConstants.connectTimeout);
   }
 
   @override
   Future<void> connect() async {
+    _setState(DriverState.connecting);
+    _waitingForApproval = false;
+
+    await _loadToken();
+
     try {
-      _setState(DriverState.connecting);
-      await _loadToken();
+      await _socket?.close();
+    } catch (_) {}
+    _socket = null;
 
-      // اقفل أي socket قديمة
+    final appName = 'Remotix';
+    final nameB64 = base64Encode(utf8.encode(appName));
+    final nameEnc = Uri.encodeComponent(appName);
+
+    // ✅ Samsung بيستخدم base64 اسم التطبيق — بعض الأجهزة بتقبل encoded
+    final tokenSuffix =
+        (_token != null && _token!.isNotEmpty) ? '&token=$_token' : '';
+
+    final urls = [
+      'ws://$ipAddress:${AppConstants.samsungTizenPort}'
+          '/api/v2/channels/samsung.remote.control'
+          '?name=$nameB64$tokenSuffix',
+      'ws://$ipAddress:${AppConstants.samsungTizenPort}'
+          '/api/v2/channels/samsung.remote.control'
+          '?name=$nameEnc$tokenSuffix',
+    ];
+
+    Object? lastErr;
+    for (final url in urls) {
       try {
-        await _socket?.close();
-      } catch (_) {}
-      _socket = null;
-
-      final appName = 'Remotix';
-
-      // Samsung docs بتقول name=base64 غالبًا، لكن بعض الأجهزة بتمشي encoded
-      final nameBase64 = base64Encode(utf8.encode(appName));
-      final nameEncoded = Uri.encodeComponent(appName);
-
-      final tokenParam =
-          (_token != null && _token!.isNotEmpty) ? '&token=$_token' : '';
-
-      final urlBase64 =
-          'ws://$ipAddress:${AppConstants.samsungTizenPort}'
-          '/api/v2/channels/samsung.remote.control?name=$nameBase64$tokenParam';
-
-      final urlEncoded =
-          'ws://$ipAddress:${AppConstants.samsungTizenPort}'
-          '/api/v2/channels/samsung.remote.control?name=$nameEncoded$tokenParam';
-
-      try {
-        _socket = await _tryConnect(urlBase64);
-      } catch (_) {
-        _socket = await _tryConnect(urlEncoded);
+        _socket = await _openSocket(url);
+        break;
+      } catch (e) {
+        lastErr = e;
+        AppLogger.w('Samsung: $url failed → $e');
       }
-
-      _socket!.listen(
-        (dynamic data) {
-          AppLogger.d('Samsung RX: $data');
-          _handleMessage(data);
-        },
-        onError: (Object e, StackTrace st) {
-          AppLogger.e('Samsung WebSocket error', e, st);
-          _setState(DriverState.error);
-          _scheduleReconnect();
-        },
-        onDone: () {
-          AppLogger.w('Samsung WebSocket closed');
-          _setState(DriverState.disconnected);
-          _scheduleReconnect();
-        },
-        cancelOnError: true,
-      );
-
-      _reconnectAttempts = 0;
-      _setState(DriverState.connected);
-      AppLogger.i('Samsung: Connected');
-    } on TimeoutException {
-      _setState(DriverState.error);
-      throw const ConnectionException('Samsung connection timed out');
-    } catch (e, st) {
-      _setState(DriverState.error);
-      AppLogger.e('Samsung connect failed', e, st);
-      throw ConnectionException('Samsung connect failed: $e');
     }
+
+    if (_socket == null) {
+      _setState(DriverState.error);
+      throw ConnectionException('Samsung: $lastErr');
+    }
+
+    _socket!.listen(
+      (dynamic data) {
+        AppLogger.d('Samsung RX: $data');
+        _handleMessage(data as String);
+      },
+      onError: (Object e, StackTrace st) {
+        AppLogger.e('Samsung WS error', e, st);
+        _setState(DriverState.error);
+        _scheduleReconnect();
+      },
+      onDone: () {
+        AppLogger.w('Samsung WS closed');
+        _setState(DriverState.disconnected);
+        _scheduleReconnect();
+      },
+      cancelOnError: true,
+    );
+
+    _reconnectAttempts = 0;
+    _setState(DriverState.connected);
+    AppLogger.i('Samsung: ✅ Connected');
   }
 
-  void _handleMessage(dynamic data) async {
-    try {
-      final msg = jsonDecode(data.toString());
-      final event = msg['event'];
+  // ─────────────────────────── Message Handler ───────────────────────
 
-      if (event == 'ms.channel.connect') {
+  void _handleMessage(String raw) {
+    Map<String, dynamic> msg;
+    try {
+      msg = jsonDecode(raw) as Map<String, dynamic>;
+    } catch (_) {
+      return;
+    }
+
+    final event = msg['event'] as String? ?? '';
+
+    switch (event) {
+      // ✅ اتصال ناجح + token جديد
+      case 'ms.channel.connect':
+        _waitingForApproval = false;
         final token = msg['data']?['token'];
         if (token is String && token.isNotEmpty && token != _token) {
-          await _saveToken(token);
+          _saveToken(token);
         }
-      }
-    } catch (_) {
-      // ignore parse errors
+        AppLogger.i('Samsung: Channel connected, token received');
+
+      // ✅ التلفزيون بيطلب موافقة المستخدم
+      case 'ms.channel.clientConnect':
+        AppLogger.i('Samsung: Client connected event');
+
+      // ✅ FIX: Samsung بيبعت unauthorized لو محتاج موافقة
+      case 'ms.channel.unauthorized':
+        _waitingForApproval = true;
+        AppLogger.w(
+          'Samsung: Unauthorized — TV is waiting for user approval. '
+          'Accept the connection request on the TV.',
+        );
+        // ✅ مش بنعمل error هنا — نفضل connected وننتظر الموافقة
+
+      // خطأ عام
+      default:
+        if (msg.containsKey('error')) {
+          AppLogger.w('Samsung: Error message → $raw');
+        }
     }
   }
+
+  // ─────────────────────────── Commands ──────────────────────────────
 
   @override
   Future<void> sendCommand(TvCommand command) async {
-    if (!isConnected) throw const DriverException('Not connected');
-
-    final key = _keyMap[command];
-    if (key == null) return;
+    if (!isConnected) {
+      throw DriverException(
+        _state == DriverState.connecting
+            ? 'جاري الاتصال، انتظر...'
+            : 'التلفزيون غير متصل',
+      );
+    }
 
     final s = _socket;
     if (s == null) throw const DriverException('Socket not ready');
 
+    final key = _keyMap[command];
+    if (key == null) {
+      AppLogger.w('Samsung: No key mapping for $command');
+      return;
+    }
+
     try {
-      final payload = jsonEncode({
+      s.add(jsonEncode({
         'method': 'ms.remote.control',
         'params': {
           'Cmd': 'Click',
@@ -177,44 +232,45 @@ class SamsungTizenDriver extends TvDriver {
           'Option': 'false',
           'TypeOfRemote': 'SendRemoteKey',
         },
-      });
-
-      s.add(payload);
-      AppLogger.d('Samsung: Sent $command -> $key');
+      }));
+      AppLogger.d('Samsung: Sent $command → $key');
     } catch (e, st) {
-      AppLogger.e('Samsung sendCommand error', e, st);
+      AppLogger.e('Samsung: sendCommand error', e, st);
       _setState(DriverState.error);
       _scheduleReconnect();
     }
   }
 
+  // ─────────────────────────── Reconnect ─────────────────────────────
+
   void _scheduleReconnect() {
     if (_reconnectAttempts >= AppConstants.maxReconnectAttempts) return;
-
-    // لو already connecting/connected ما نعملش reconnect spam
     if (_state == DriverState.connecting || _state == DriverState.connected) {
       return;
     }
-
     _reconnectAttempts++;
+    AppLogger.i('Samsung: Reconnect attempt $_reconnectAttempts');
+
     Future.delayed(AppConstants.reconnectDelay, () async {
       try {
         await connect();
-      } catch (e, st) {
-        AppLogger.e('Samsung reconnect failed', e, st);
+      } catch (e) {
+        AppLogger.e('Samsung: Reconnect failed', e);
       }
     });
   }
 
+  // ─────────────────────────── Cleanup ───────────────────────────────
+
   @override
   Future<void> disconnect() async {
+    _reconnectAttempts = AppConstants.maxReconnectAttempts;
     try {
       await _socket?.close();
-    } catch (_) {
-      // ignore
-    } finally {
-      _socket = null;
-      _setState(DriverState.disconnected);
-    }
+    } catch (_) {}
+    _socket = null;
+    _waitingForApproval = false;
+    _setState(DriverState.disconnected);
+    AppLogger.i('Samsung: Disconnected');
   }
 }
