@@ -12,16 +12,24 @@ import '../../core/utils/app_logger.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/error/exceptions.dart';
 
+/// حالة الـ pairing
+enum LgPairingState { none, waitingPin, paired, failed }
+
 class LgWebOsDriver extends TvDriver {
   final String ipAddress;
 
-  WebSocket? _ssapSocket;
+  WebSocket? _socket;
   WebSocket? _pointerSocket;
 
   final StreamController<DriverState> _stateController =
       StreamController<DriverState>.broadcast();
 
+  // ✅ stream للـ pairing state عشان الـ UI يعرف يعرض شاشة الـ PIN
+  final StreamController<LgPairingState> _pairingController =
+      StreamController<LgPairingState>.broadcast();
+
   DriverState _state = DriverState.disconnected;
+  LgPairingState _pairingState = LgPairingState.none;
 
   int _messageId = 0;
   int _reconnectAttempts = 0;
@@ -29,9 +37,11 @@ class LgWebOsDriver extends TvDriver {
   String? _clientKey;
   String? _pointerPath;
   bool _muteState = false;
+  bool _isRegistered = false;
 
   Completer<void>? _registeredCompleter;
-  bool _isRegistered = false;
+  // ✅ Completer ينتظر المستخدم يدخل الـ PIN
+  Completer<String>? _pinCompleter;
 
   LgWebOsDriver(this.ipAddress);
 
@@ -41,138 +51,153 @@ class LgWebOsDriver extends TvDriver {
   @override
   Stream<DriverState> get stateStream => _stateController.stream;
 
+  Stream<LgPairingState> get pairingStream => _pairingController.stream;
+  LgPairingState get pairingState => _pairingState;
+
   void _setState(DriverState s) {
     if (_state == s) return;
     _state = s;
     if (!_stateController.isClosed) _stateController.add(s);
   }
 
-  String get _prefsKey => 'lg_client_key_$ipAddress';
-
-  Future<void> _loadClientKey() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      _clientKey = prefs.getString(_prefsKey);
-      AppLogger.i('LG: clientKey="${_clientKey ?? 'none'}"');
-    } catch (e) {
-      AppLogger.w('LG: load clientKey failed: $e');
-    }
+  void _setPairing(LgPairingState s) {
+    _pairingState = s;
+    if (!_pairingController.isClosed) _pairingController.add(s);
   }
 
-  Future<void> _saveClientKey(String key) async {
+  String get _prefsKey => 'lg_key_$ipAddress';
+
+  // ─── Storage ──────────────────────────────────────────────────────
+
+  Future<void> _loadKey() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_prefsKey, key);
-      _clientKey = key;
-      AppLogger.i('LG: clientKey saved');
-    } catch (e) {
-      AppLogger.w('LG: save clientKey failed: $e');
-    }
+      final p = await SharedPreferences.getInstance();
+      _clientKey = p.getString(_prefsKey);
+      AppLogger.i('LG: key=${_clientKey ?? "none"}');
+    } catch (_) {}
   }
 
-  Future<void> _clearClientKey() async {
+  Future<void> _saveKey(String k) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(_prefsKey);
+      final p = await SharedPreferences.getInstance();
+      await p.setString(_prefsKey, k);
+      _clientKey = k;
+      AppLogger.i('LG: key saved');
+    } catch (_) {}
+  }
+
+  Future<void> _deleteKey() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.remove(_prefsKey);
       _clientKey = null;
-      AppLogger.w('LG: clientKey cleared');
-    } catch (e) {
-      AppLogger.w('LG: clear clientKey failed: $e');
-    }
+      AppLogger.w('LG: key deleted');
+    } catch (_) {}
   }
+
+  // ─── Connect ──────────────────────────────────────────────────────
 
   @override
   Future<void> connect() async {
     _setState(DriverState.connecting);
-    await _loadClientKey();
-
+    _setPairing(LgPairingState.none);
     _isRegistered = false;
-    _registeredCompleter = Completer<void>();
 
-    await _closeSockets();
+    await _loadKey();
+    await _closeAll();
 
-    WebSocket socket;
+    // ── فتح socket ──
+    WebSocket ws;
     try {
-      socket = await WebSocket.connect(
+      ws = await WebSocket.connect(
         'ws://$ipAddress:${AppConstants.lgWebOsPort}',
       ).timeout(AppConstants.connectTimeout);
     } catch (_) {
       try {
-        socket = await WebSocket.connect(
+        ws = await WebSocket.connect(
           'ws://$ipAddress:${AppConstants.lgWebOsPort}/api/websocket',
         ).timeout(AppConstants.connectTimeout);
       } catch (e, st) {
-        AppLogger.e('LG: socket failed', e, st);
+        AppLogger.e('LG: open failed', e, st);
         _setState(DriverState.error);
         throw ConnectionException('LG: $e');
       }
     }
 
-    _ssapSocket = socket;
-    AppLogger.i('LG: socket open ✅');
+    _socket = ws;
+    AppLogger.i('LG: socket open');
 
-    socket.listen(
-      (data) async => _handleMessage(data as String),
+    _registeredCompleter = Completer<void>();
+
+    ws.listen(
+      (data) => _onMessage(data as String),
       onError: (Object e, StackTrace st) {
         AppLogger.e('LG WS error', e, st);
+        _isRegistered = false;
         _setState(DriverState.error);
         _scheduleReconnect();
       },
       onDone: () {
         AppLogger.w('LG WS closed');
+        _isRegistered = false;
         if (_state != DriverState.disconnected) {
           _setState(DriverState.disconnected);
           _scheduleReconnect();
         }
       },
-      cancelOnError: true,
+      cancelOnError: false,
     );
 
-    await _sendRegistration(force: false);
+    // ── Register بالـ PIN ──
+    _sendRegister(force: false);
 
     final hasKey = (_clientKey ?? '').isNotEmpty;
 
-    // ✅ FIX: لو مفيش key → المستخدم هيوافق على التلفزيون
-    // بنستنى 60 ثانية عشان يوافق
-    bool registered = await _waitRegistered(hasKey ? 8 : 60);
+    // لو عنده key محفوظ → بيرد بسرعة
+    // لو مفيش key → التلفزيون هيعرض PIN وننتظر المستخدم يدخله
+    bool ok = await _waitReg(hasKey ? 8 : 120);
 
-    if (!registered && hasKey) {
-      AppLogger.w('LG: old key rejected — clearing and retrying');
-      await _clearClientKey();
+    if (!ok && hasKey) {
+      AppLogger.w('LG: key rejected, retry without key');
+      await _deleteKey();
       _isRegistered = false;
       _registeredCompleter = Completer<void>();
-      await _sendRegistration(force: true);
-      // ✅ استنى 60 ثانية للموافقة
-      registered = await _waitRegistered(60);
+      _sendRegister(force: true);
+      ok = await _waitReg(120);
     }
 
-    if (!registered) {
+    if (!ok) {
+      _setPairing(LgPairingState.failed);
       _setState(DriverState.error);
       throw const ConnectionException(
-        'LG: انتهت مهلة الاقتران.\n'
-        'وافق على الطلب الظاهر على شاشة التلفزيون ثم أعد المحاولة.',
+        'LG: انتهت مهلة الاقتران. أعد المحاولة.',
       );
     }
 
-    // ✅ بس بعد ما registered يتأكد نبعت connected
+    if (_socket == null || _socket!.readyState != WebSocket.open) {
+      _setState(DriverState.error);
+      throw const ConnectionException('LG: socket closed after registration');
+    }
+
+    _setPairing(LgPairingState.paired);
     _setState(DriverState.connected);
     _reconnectAttempts = 0;
-    AppLogger.i('LG: connected & registered ✅');
+    AppLogger.i('LG: READY ✅');
 
-    _requestPointerSocket().catchError(
-      (Object e) => AppLogger.w('LG: pointer request failed: $e'),
-    );
+    _requestPointer();
   }
 
-  Future<void> _sendRegistration({required bool force}) async {
+  // ─── Register ─────────────────────────────────────────────────────
+
+  void _sendRegister({required bool force}) {
     final payload = <String, dynamic>{
       'forcePairing': force,
-      'pairingType': 'PROMPT',
+      'pairingType': 'PIN',   // ✅ PIN بدل PROMPT
       'manifest': {
         'manifestVersion': 1,
-        'appVersion': '1.0',
+        'appVersion': '1.1',
         'signed': {
-          'created': '20260301',
+          'created': '20260305',
           'appId': 'com.remotix.app',
           'vendorId': 'com.remotix',
           'localizedAppNames': {'': 'Remotix'},
@@ -195,22 +220,36 @@ class LgWebOsDriver extends TvDriver {
       payload['client-key'] = _clientKey;
     }
 
-    AppLogger.i('LG: sending register (force=$force, hasKey=${(_clientKey ?? '').isNotEmpty})');
-    await _sendRaw({'id': 'register_0', 'type': 'register', 'payload': payload});
+    AppLogger.i('LG: register PIN (force=$force hasKey=${payload.containsKey('client-key')})');
+    _tx({'id': 'reg_0', 'type': 'register', 'payload': payload});
   }
 
-  Future<bool> _waitRegistered(int seconds) async {
+  /// ✅ إرسال الـ PIN للتلفزيون
+  Future<void> submitPin(String pin) async {
+    AppLogger.i('LG: submitting PIN=$pin');
+    _tx({
+      'id': 'pin_${++_messageId}',
+      'type': 'request',
+      'uri': 'ssap://pairing/setPin',
+      'payload': {'pin': pin},
+    });
+    // أعطِ التلفزيون وقت للرد
+    await Future.delayed(const Duration(milliseconds: 500));
+  }
+
+  Future<bool> _waitReg(int secs) async {
     try {
-      await _registeredCompleter!.future.timeout(Duration(seconds: seconds));
+      await _registeredCompleter!.future.timeout(Duration(seconds: secs));
       return true;
     } catch (_) {
       return _isRegistered;
     }
   }
 
-  Future<void> _handleMessage(String raw) async {
-    AppLogger.d('LG RX: $raw');
+  // ─── Message Handler ──────────────────────────────────────────────
 
+  void _onMessage(String raw) {
+    AppLogger.d('LG ◀ $raw');
     Map<String, dynamic> msg;
     try {
       msg = jsonDecode(raw) as Map<String, dynamic>;
@@ -223,36 +262,47 @@ class LgWebOsDriver extends TvDriver {
     switch (type) {
       case 'registered':
         final key = (msg['payload'] as Map?)?['client-key'];
-        if (key is String && key.isNotEmpty) await _saveClientKey(key);
+        if (key is String && key.isNotEmpty) _saveKey(key);
         _isRegistered = true;
+        AppLogger.i('LG: registered ✅');
         if (_registeredCompleter?.isCompleted == false) {
           _registeredCompleter!.complete();
         }
-        AppLogger.i('LG: registered ✅ key=$key');
-
-      case 'error':
-        AppLogger.w('LG: error response: $raw');
-        if (_registeredCompleter?.isCompleted == false) {
-          _registeredCompleter!.completeError(raw);
-        }
 
       case 'response':
+        // ✅ التلفزيون بعت pairing challenge → اعرض شاشة الـ PIN
+        final returnValue = msg['returnValue'];
+        if (returnValue == true || returnValue == 'true') {
+          // رد ناجح على setPin → اكتمل الـ pairing
+          AppLogger.i('LG: PIN accepted');
+        }
+
         final uri = msg['uri'] as String? ?? '';
         if (uri.contains('getPointerInputSocket')) {
           final path = (msg['payload'] as Map?)?['socketPath'] as String?;
           if (path != null && path.isNotEmpty) {
             _pointerPath = path;
-            AppLogger.i('LG: pointer path = $path');
-            _connectPointerSocket().catchError(
-              (Object e) => AppLogger.w('LG: pointer connect failed: $e'),
-            );
+            _connectPointer();
           }
         }
+
+      case 'error':
+        AppLogger.w('LG: error ← $raw');
+        if (_registeredCompleter?.isCompleted == false) {
+          _registeredCompleter!.completeError('LG error');
+        }
+
+      // ✅ التلفزيون بيطلب PIN
+      case 'pairing':
+        AppLogger.i('LG: pairing challenge received → show PIN screen');
+        _setPairing(LgPairingState.waitingPin);
     }
   }
 
-  Future<void> _requestPointerSocket() async {
-    await _sendRaw({
+  // ─── Pointer ──────────────────────────────────────────────────────
+
+  void _requestPointer() {
+    _tx({
       'id': 'ptr_${++_messageId}',
       'type': 'request',
       'uri': 'ssap://com.webos.service.networkinput/getPointerInputSocket',
@@ -260,7 +310,7 @@ class LgWebOsDriver extends TvDriver {
     });
   }
 
-  Future<void> _connectPointerSocket() async {
+  Future<void> _connectPointer() async {
     final path = _pointerPath ?? '';
     if (path.isEmpty) return;
 
@@ -268,201 +318,151 @@ class LgWebOsDriver extends TvDriver {
         ? path
         : 'ws://$ipAddress:${AppConstants.lgWebOsPort}$path';
 
-    AppLogger.i('LG: connecting pointer WS = $url');
-
+    AppLogger.i('LG: pointer → $url');
     try {
       await _pointerSocket?.close();
     } catch (_) {}
-
-    _pointerSocket =
-        await WebSocket.connect(url).timeout(AppConstants.connectTimeout);
-
-    _pointerSocket!.listen(
-      (d) => AppLogger.d('LG PTR RX: $d'),
-      onError: (e) {
-        AppLogger.w('LG PTR error: $e');
-        _pointerSocket = null;
-      },
-      onDone: () {
-        AppLogger.w('LG PTR closed');
-        _pointerSocket = null;
-      },
-      cancelOnError: true,
-    );
-    AppLogger.i('LG: pointer socket ready ✅');
+    try {
+      _pointerSocket = await WebSocket.connect(url)
+          .timeout(AppConstants.connectTimeout);
+      _pointerSocket!.listen(
+        (d) => AppLogger.d('LG PTR ◀ $d'),
+        onError: (e) { _pointerSocket = null; },
+        onDone: () { _pointerSocket = null; },
+        cancelOnError: true,
+      );
+      AppLogger.i('LG: pointer ready ✅');
+    } catch (e) {
+      AppLogger.w('LG: pointer failed: $e');
+      _pointerSocket = null;
+    }
   }
 
-  Future<void> _sendRaw(Map<String, dynamic> payload) async {
-    final s = _ssapSocket;
-    if (s == null) {
-      AppLogger.w('LG TX SKIP: socket is null');
-      return;
-    }
+  // ─── TX ───────────────────────────────────────────────────────────
+
+  void _tx(Map<String, dynamic> payload) {
+    final s = _socket;
+    if (s == null) { AppLogger.w('LG TX: socket null'); return; }
     if (s.readyState != WebSocket.open) {
-      AppLogger.w('LG TX SKIP: readyState=${s.readyState}');
+      AppLogger.w('LG TX: readyState=${s.readyState}');
       return;
     }
-    final json = jsonEncode(payload);
-    AppLogger.d('LG TX: $json');
-    s.add(json);
+    final j = jsonEncode(payload);
+    AppLogger.d('LG ▶ $j');
+    s.add(j);
   }
 
-  Future<void> _sendPointerButton(String name) async {
+  Future<void> _pointerTx(String name) async {
     if (_pointerSocket == null ||
         _pointerSocket!.readyState != WebSocket.open) {
-      AppLogger.i('LG: pointer not ready — requesting');
-      await _requestPointerSocket();
+      _requestPointer();
       await Future.delayed(const Duration(milliseconds: 1500));
     }
 
     final p = _pointerSocket;
     if (p != null && p.readyState == WebSocket.open) {
       p.add('type:button\nname:$name\n\n');
-      AppLogger.d('LG PTR TX: $name');
+      AppLogger.d('LG PTR ▶ $name');
     } else {
-      AppLogger.w('LG: pointer still not ready, SSAP fallback for $name');
-      await _ssapButtonFallback(name);
+      AppLogger.w('LG: pointer N/A, SSAP fallback: $name');
+      _ssapFallback(name);
     }
   }
 
-  Future<void> _ssapButtonFallback(String name) async {
+  void _ssapFallback(String name) {
     switch (name) {
       case 'HOME':
-        await _sendRaw({
-          'id': 'cmd_${++_messageId}',
-          'type': 'request',
-          'uri': 'ssap://system.launcher/open',
-          'payload': {'id': 'com.webos.app.home'},
-        });
+        _tx({'id': 'cmd_${++_messageId}', 'type': 'request',
+            'uri': 'ssap://system.launcher/open',
+            'payload': {'id': 'com.webos.app.home'}});
       case 'BACK':
-        await _sendRaw({
-          'id': 'cmd_${++_messageId}',
-          'type': 'request',
-          'uri': 'ssap://com.webos.service.ime/sendEnterKey',
-          'payload': {},
-        });
-      default:
-        AppLogger.w('LG: no SSAP fallback for $name');
+        _tx({'id': 'cmd_${++_messageId}', 'type': 'request',
+            'uri': 'ssap://com.webos.service.ime/sendEnterKey',
+            'payload': {}});
     }
   }
+
+  // ─── Commands ─────────────────────────────────────────────────────
 
   @override
   Future<void> sendCommand(TvCommand command) async {
-    // ✅ FIX: لازم يكون registered فعلاً مش بس socket مفتوح
-    // لأن التلفزيون بيرفض الأوامر قبل اكتمال الـ pairing
+    AppLogger.i('LG: cmd=$command reg=$_isRegistered socketState=${_socket?.readyState}');
+
     if (!_isRegistered) {
-      AppLogger.w('LG: sendCommand blocked — not registered yet');
-      // ✅ لو socket مفتوح وبس مش registered → استنى شوية
-      if (_ssapSocket != null &&
-          _ssapSocket!.readyState == WebSocket.open &&
-          _registeredCompleter != null &&
-          !_registeredCompleter!.isCompleted) {
-        AppLogger.i('LG: waiting for registration to complete...');
+      final comp = _registeredCompleter;
+      if (comp != null && !comp.isCompleted) {
         try {
-          await _registeredCompleter!.future
-              .timeout(const Duration(seconds: 10));
+          await comp.future.timeout(const Duration(seconds: 8));
         } catch (_) {}
       }
       if (!_isRegistered) {
-        throw const DriverException('جاري إتمام الاقتران مع التلفزيون، انتظر...');
+        throw const DriverException('التلفزيون لم يكتمل الاقتران بعد');
       }
     }
 
-    final s = _ssapSocket;
+    final s = _socket;
     if (s == null || s.readyState != WebSocket.open) {
-      throw DriverException('LG غير متصل (state: $_state)');
+      throw DriverException('انقطع الاتصال (state=$_state)');
     }
-
-    AppLogger.i('LG: ► sendCommand: $command');
 
     switch (command) {
       case TvCommand.power:
-        await _sendRaw({
-          'id': 'cmd_${++_messageId}',
-          'type': 'request',
-          'uri': 'ssap://system/turnOff',
-          'payload': {},
-        });
-
+        _tx({'id': 'cmd_${++_messageId}', 'type': 'request',
+            'uri': 'ssap://system/turnOff', 'payload': {}});
       case TvCommand.volumeUp:
-        await _sendRaw({
-          'id': 'cmd_${++_messageId}',
-          'type': 'request',
-          'uri': 'ssap://audio/volumeUp',
-          'payload': {},
-        });
-
+        _tx({'id': 'cmd_${++_messageId}', 'type': 'request',
+            'uri': 'ssap://audio/volumeUp', 'payload': {}});
       case TvCommand.volumeDown:
-        await _sendRaw({
-          'id': 'cmd_${++_messageId}',
-          'type': 'request',
-          'uri': 'ssap://audio/volumeDown',
-          'payload': {},
-        });
-
+        _tx({'id': 'cmd_${++_messageId}', 'type': 'request',
+            'uri': 'ssap://audio/volumeDown', 'payload': {}});
       case TvCommand.mute:
         _muteState = !_muteState;
-        await _sendRaw({
-          'id': 'cmd_${++_messageId}',
-          'type': 'request',
-          'uri': 'ssap://audio/setMute',
-          'payload': {'mute': _muteState},
-        });
-
+        _tx({'id': 'cmd_${++_messageId}', 'type': 'request',
+            'uri': 'ssap://audio/setMute',
+            'payload': {'mute': _muteState}});
       case TvCommand.channelUp:
-        await _sendRaw({
-          'id': 'cmd_${++_messageId}',
-          'type': 'request',
-          'uri': 'ssap://tv/channelUp',
-          'payload': {},
-        });
-
+        _tx({'id': 'cmd_${++_messageId}', 'type': 'request',
+            'uri': 'ssap://tv/channelUp', 'payload': {}});
       case TvCommand.channelDown:
-        await _sendRaw({
-          'id': 'cmd_${++_messageId}',
-          'type': 'request',
-          'uri': 'ssap://tv/channelDown',
-          'payload': {},
-        });
-
-      case TvCommand.up:    await _sendPointerButton('UP');
-      case TvCommand.down:  await _sendPointerButton('DOWN');
-      case TvCommand.left:  await _sendPointerButton('LEFT');
-      case TvCommand.right: await _sendPointerButton('RIGHT');
-      case TvCommand.ok:    await _sendPointerButton('ENTER');
-      case TvCommand.back:  await _sendPointerButton('BACK');
-      case TvCommand.home:  await _sendPointerButton('HOME');
+        _tx({'id': 'cmd_${++_messageId}', 'type': 'request',
+            'uri': 'ssap://tv/channelDown', 'payload': {}});
+      case TvCommand.up:    await _pointerTx('UP');
+      case TvCommand.down:  await _pointerTx('DOWN');
+      case TvCommand.left:  await _pointerTx('LEFT');
+      case TvCommand.right: await _pointerTx('RIGHT');
+      case TvCommand.ok:    await _pointerTx('ENTER');
+      case TvCommand.back:  await _pointerTx('BACK');
+      case TvCommand.home:  await _pointerTx('HOME');
     }
   }
+
+  // ─── Reconnect ────────────────────────────────────────────────────
 
   void _scheduleReconnect() {
     if (_reconnectAttempts >= AppConstants.maxReconnectAttempts) return;
     if (_state == DriverState.connecting) return;
     _reconnectAttempts++;
-    AppLogger.i('LG: reconnect #$_reconnectAttempts');
     Future.delayed(AppConstants.reconnectDelay, () async {
-      try {
-        await connect();
-      } catch (e) {
-        AppLogger.e('LG: reconnect failed', e);
-      }
+      try { await connect(); } catch (e) { AppLogger.e('LG reconnect', e); }
     });
   }
 
-  Future<void> _closeSockets() async {
+  // ─── Cleanup ──────────────────────────────────────────────────────
+
+  Future<void> _closeAll() async {
     try { await _pointerSocket?.close(); } catch (_) {}
-    try { await _ssapSocket?.close(); } catch (_) {}
+    try { await _socket?.close(); } catch (_) {}
     _pointerSocket = null;
-    _ssapSocket = null;
+    _socket = null;
   }
 
   @override
   Future<void> disconnect() async {
     _reconnectAttempts = AppConstants.maxReconnectAttempts;
-    await _closeSockets();
     _isRegistered = false;
     _registeredCompleter = null;
+    _pinCompleter = null;
+    await _closeAll();
     _setState(DriverState.disconnected);
-    AppLogger.i('LG: disconnected');
   }
 }
