@@ -25,9 +25,9 @@ class DeviceProvider extends ChangeNotifier {
   String? _errorMessage;
   StreamSubscription<DriverState>? _driverStateSub;
 
-  // ✅ PIN pairing state
-  bool _waitingForPin = false;
-  StreamSubscription<LgPairingState>? _pairingSub;
+  // ✅ متى نعرض شاشة الـ PIN
+  bool _showPinScreen = false;
+  bool get showPinScreen => _showPinScreen;
 
   bool _isSelecting = false;
 
@@ -39,9 +39,6 @@ class DeviceProvider extends ChangeNotifier {
   DriverState get driverState => _driverState;
   String? get errorMessage => _errorMessage;
   bool get isConnected => _driverState == DriverState.connected;
-  bool get waitingForPin => _waitingForPin;
-
-  // ✅ للـ UI يوصل للـ driver مباشرة لإرسال PIN
   TvDriver? get currentDriver => _driver;
 
   Future<void> scanDevices() async {
@@ -52,9 +49,7 @@ class DeviceProvider extends ChangeNotifier {
 
     try {
       final found = await _discoverUseCase();
-      _devices
-        ..clear()
-        ..addAll(found);
+      _devices..clear()..addAll(found);
       _scanState = ScanState.done;
       AppLogger.i('Scan: ${_devices.length} found');
     } catch (e, st) {
@@ -72,13 +67,10 @@ class DeviceProvider extends ChangeNotifier {
 
     try {
       await _driverStateSub?.cancel();
-      await _pairingSub?.cancel();
       _driverStateSub = null;
-      _pairingSub = null;
-
       try { await _driver?.disconnect(); } catch (_) {}
       _driver = null;
-      _waitingForPin = false;
+      _showPinScreen = false;
 
       _selectedDevice = device;
       _driverState = DriverState.connecting;
@@ -94,33 +86,43 @@ class DeviceProvider extends ChangeNotifier {
         notifyListeners();
       });
 
-      // ✅ اشترك في pairing stream لو LG
+      // ✅ ابدأ الاتصال في الخلفية بدون await
+      // عشان الـ UI يقدر يعرض شاشة الـ PIN في نفس الوقت
+      driver.connect().then((_) {
+        _driverState = driver.state;
+        _showPinScreen = false;
+        notifyListeners();
+      }).catchError((e) {
+        AppLogger.e('connect failed', e);
+        _driverState = DriverState.error;
+        _showPinScreen = false;
+        _errorMessage = e.toString().replaceAll('Exception:', '').trim();
+        notifyListeners();
+      });
+
+      // ✅ لو LG ومفيش key محفوظ → اعرض شاشة PIN فوراً
       if (driver is LgWebOsDriver) {
-        _pairingSub = driver.pairingStream.listen((ps) {
-          if (ps == LgPairingState.waitingPin) {
-            _waitingForPin = true;
-            notifyListeners();
-          } else if (ps == LgPairingState.paired) {
-            _waitingForPin = false;
-            notifyListeners();
-          }
-        });
+        final hasKey = await driver.hasSavedKey();
+        if (!hasKey) {
+          _showPinScreen = true;
+          notifyListeners();
+        }
       }
 
-      await driver.connect();
-
-      _driverState = driver.state;
-      _waitingForPin = false;
-      notifyListeners();
     } catch (e, st) {
       AppLogger.e('selectDevice failed', e, st);
       _driverState = DriverState.error;
-      _waitingForPin = false;
+      _showPinScreen = false;
       _errorMessage = e.toString().replaceAll('Exception:', '').trim();
       notifyListeners();
     } finally {
       _isSelecting = false;
     }
+  }
+
+  void hidePinScreen() {
+    _showPinScreen = false;
+    notifyListeners();
   }
 
   Future<void> sendCommand(TvCommand command) async {
@@ -136,14 +138,12 @@ class DeviceProvider extends ChangeNotifier {
 
   Future<void> disconnect() async {
     await _driverStateSub?.cancel();
-    await _pairingSub?.cancel();
     _driverStateSub = null;
-    _pairingSub = null;
     try { await _driver?.disconnect(); } catch (_) {}
     _driver = null;
     _selectedDevice = null;
     _driverState = DriverState.disconnected;
-    _waitingForPin = false;
+    _showPinScreen = false;
     _errorMessage = null;
     notifyListeners();
   }
@@ -151,7 +151,6 @@ class DeviceProvider extends ChangeNotifier {
   @override
   void dispose() {
     _driverStateSub?.cancel();
-    _pairingSub?.cancel();
     _driver?.disconnect().catchError((_) {});
     super.dispose();
   }
