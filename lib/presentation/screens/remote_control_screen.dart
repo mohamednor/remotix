@@ -5,8 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../../domain/entities/tv_command.dart';
 import '../../drivers/base/tv_driver.dart';
-import '../../drivers/lg/lg_webos_driver.dart';
-import '../../drivers/samsung/samsung_tizen_driver.dart';
+import '../../core/utils/app_logger.dart';
 import '../providers/device_provider.dart';
 import '../widgets/remote_button.dart';
 import '../widgets/dpad_widget.dart';
@@ -23,148 +22,30 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
   static const _accent = Color(0xFF6C63FF);
   static const _bg = Color(0xFF12121F);
 
-  String? _lastError;
-  bool _showPairingBanner = false;
+  String? _errorMsg;
 
-  @override
-  void initState() {
-    super.initState();
-    // ✅ بعد أول frame اتحرك نستنى مشكلة من الـ driver
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _checkPairingStatus();
-    });
-  }
-
-  void _checkPairingStatus() {
-    final driver = context.read<DeviceProvider>().currentDriver;
-    if (driver is LgWebOsDriver && driver.waitingForUserApproval) {
-      _showPairingDialog(isLg: true);
-    } else if (driver is SamsungTizenDriver && driver.waitingForApproval) {
-      _showPairingDialog(isLg: false);
-    }
-  }
-
-  void _showPairingDialog({required bool isLg}) {
-    if (!mounted) return;
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E2E),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Row(
-          children: [
-            Icon(
-              Icons.tv_rounded,
-              color: isLg ? const Color(0xFFFF6584) : const Color(0xFF43E97B),
-            ),
-            const SizedBox(width: 10),
-            Text(
-              isLg ? 'اقتران LG webOS' : 'اقتران Samsung',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.phonelink_rounded,
-              color: Color(0xFF6C63FF),
-              size: 64,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              isLg
-                  ? 'ظهر على شاشة التلفزيون طلب اقتران.\n\nاضغط "Allow" أو "السماح" على التلفزيون باستخدام الريموت الأصلي.'
-                  : 'ظهر على شاشة التلفزيون رسالة لقبول الاتصال.\n\nاضغط "Accept" أو "قبول" على التلفزيون.',
-              style: const TextStyle(
-                color: Color(0xFFCCCCDD),
-                fontSize: 14,
-                height: 1.6,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 20),
-            // ✅ بنر إضافي لو LG
-            if (isLg)
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF12121F),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFF3D3D5C)),
-                ),
-                child: const Row(
-                  children: [
-                    Icon(Icons.info_outline_rounded,
-                        color: Color(0xFFFFB347), size: 18),
-                    SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'في المرات الجاية هيتصل أوتوماتيك بدون موافقة',
-                        style: TextStyle(
-                          color: Color(0xFF9090B0),
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text(
-              'تم القبول ✓',
-              style: TextStyle(
-                color: Color(0xFF43E97B),
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              Navigator.pop(context); // ارجع للقائمة
-            },
-            child: const Text(
-              'إلغاء',
-              style: TextStyle(color: Color(0xFF9090B0)),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ✅ إظهار error لحظي لما زر يتضغط وما يرسلش
-  Future<void> _sendCommand(DeviceProvider provider, TvCommand cmd) async {
+  // ✅ الإصلاح الرئيسي: sendCommand async مع catch حقيقي
+  Future<void> _send(TvCommand cmd) async {
+    final provider = context.read<DeviceProvider>();
     try {
       await provider.sendCommand(cmd);
-      if (_lastError != null) setState(() => _lastError = null);
-    } catch (e) {
-      final msg = e.toString().replaceAll('Exception:', '').trim();
-      setState(() => _lastError = msg);
-
-      // ✅ لو التليفزيون بيطلب pairing وإحنا ضغطنا زر
-      final driver = provider.currentDriver;
-      if (driver is LgWebOsDriver && driver.waitingForUserApproval) {
-        _showPairingDialog(isLg: true);
-      } else if (driver is SamsungTizenDriver && driver.waitingForApproval) {
-        _showPairingDialog(isLg: false);
+      // لو نجح امسح الـ error القديم
+      if (_errorMsg != null && mounted) {
+        setState(() => _errorMsg = null);
       }
-
-      // امسح الـ error بعد 3 ثواني
-      Future.delayed(const Duration(seconds: 3), () {
-        if (mounted) setState(() => _lastError = null);
-      });
+    } catch (e) {
+      final msg = e.toString()
+          .replaceAll('Exception:', '')
+          .replaceAll('DriverException:', '')
+          .trim();
+      AppLogger.e('RemoteScreen: sendCommand error', e);
+      if (mounted) {
+        setState(() => _errorMsg = msg);
+        // امسح الـ error بعد 4 ثواني
+        Future.delayed(const Duration(seconds: 4), () {
+          if (mounted) setState(() => _errorMsg = null);
+        });
+      }
     }
   }
 
@@ -172,12 +53,7 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
   Widget build(BuildContext context) {
     final provider = context.watch<DeviceProvider>();
     final device = provider.selectedDevice;
-
-    // ✅ راقب تغيير state الـ driver عشان نعرض banner الـ pairing
     final driverState = provider.driverState;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _checkPairingStatus();
-    });
 
     return Scaffold(
       backgroundColor: _bg,
@@ -207,18 +83,14 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
           ],
         ),
         actions: [
-          // ✅ زر Reconnect لو في error
+          // زر reconnect لو في error
           if (driverState == DriverState.error ||
               driverState == DriverState.disconnected)
             IconButton(
-              icon: const Icon(Icons.refresh_rounded,
-                  color: Color(0xFF6C63FF)),
+              icon: const Icon(Icons.refresh_rounded, color: _accent),
               tooltip: 'إعادة الاتصال',
               onPressed: () async {
-                if (device != null) {
-                  await provider.selectDevice(device);
-                  if (mounted) _checkPairingStatus();
-                }
+                if (device != null) await provider.selectDevice(device);
               },
             ),
         ],
@@ -226,32 +98,70 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // ✅ Error banner
-            if (_lastError != null) _buildErrorBanner(_lastError!),
+            // ── Error banner ──
+            if (_errorMsg != null)
+              Container(
+                width: double.infinity,
+                color: const Color(0xFFE53935).withOpacity(0.18),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                child: Row(
+                  children: [
+                    const Icon(Icons.error_outline_rounded,
+                        color: Color(0xFFFF6584), size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _errorMsg!,
+                        style: const TextStyle(
+                            color: Color(0xFFFF6584), fontSize: 13),
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () => setState(() => _errorMsg = null),
+                      child: const Icon(Icons.close,
+                          color: Color(0xFF9090B0), size: 16),
+                    ),
+                  ],
+                ),
+              ),
 
-            // ✅ Pairing waiting banner
-            if (provider.waitingForPairing)
-              _buildPairingWaitingBanner(provider),
-
-            // ✅ Connecting overlay
+            // ── Connecting banner ──
             if (driverState == DriverState.connecting)
-              _buildConnectingBanner(),
+              Container(
+                width: double.infinity,
+                color: _accent.withOpacity(0.12),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: const Row(
+                  children: [
+                    SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: _accent),
+                    ),
+                    SizedBox(width: 10),
+                    Text('جاري الاتصال...',
+                        style: TextStyle(color: _accent, fontSize: 12)),
+                  ],
+                ),
+              ),
 
+            // ── Main remote UI ──
             Expanded(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 24, vertical: 16),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
                 child: Column(
                   children: [
-                    _buildPowerButton(provider),
+                    _buildPowerButton(),
                     const SizedBox(height: 28),
-                    _buildVolumeChannelRow(provider),
+                    _buildVolumeChannelRow(),
                     const SizedBox(height: 28),
-                    DPadWidget(
-                      onCommand: (cmd) => _sendCommand(provider, cmd),
-                    ),
+                    DPadWidget(onCommand: _send),
                     const SizedBox(height: 28),
-                    _buildBottomRow(provider),
+                    _buildBottomRow(),
                     const SizedBox(height: 24),
                   ],
                 ),
@@ -265,93 +175,12 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
     );
   }
 
-  // ─────────────────────────── Banners ──────────────────────────────
-
-  Widget _buildErrorBanner(String error) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 300),
-      color: const Color(0xFFE53935).withOpacity(0.15),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      child: Row(
-        children: [
-          const Icon(Icons.error_outline_rounded,
-              color: Color(0xFFFF6584), size: 18),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              error,
-              style: const TextStyle(
-                  color: Color(0xFFFF6584), fontSize: 13),
-            ),
-          ),
-          GestureDetector(
-            onTap: () => setState(() => _lastError = null),
-            child: const Icon(Icons.close, color: Color(0xFF9090B0), size: 16),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPairingWaitingBanner(DeviceProvider provider) {
-    return Container(
-      color: const Color(0xFFFFB347).withOpacity(0.15),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      child: Row(
-        children: [
-          const SizedBox(
-            width: 16,
-            height: 16,
-            child: CircularProgressIndicator(
-                strokeWidth: 2, color: Color(0xFFFFB347)),
-          ),
-          const SizedBox(width: 10),
-          const Expanded(
-            child: Text(
-              'انتظر الموافقة على التلفزيون...',
-              style: TextStyle(color: Color(0xFFFFB347), fontSize: 13),
-            ),
-          ),
-          GestureDetector(
-            onTap: _checkPairingStatus,
-            child: const Icon(Icons.info_outline_rounded,
-                color: Color(0xFFFFB347), size: 18),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildConnectingBanner() {
-    return Container(
-      color: const Color(0xFF6C63FF).withOpacity(0.12),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: const Row(
-        children: [
-          SizedBox(
-            width: 14,
-            height: 14,
-            child: CircularProgressIndicator(
-                strokeWidth: 2, color: Color(0xFF6C63FF)),
-          ),
-          SizedBox(width: 10),
-          Text(
-            'جاري الاتصال...',
-            style: TextStyle(color: Color(0xFF6C63FF), fontSize: 12),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ─────────────────────────── Buttons ──────────────────────────────
-
-  Widget _buildPowerButton(DeviceProvider provider) {
+  Widget _buildPowerButton() {
     return Center(
       child: RemoteButton(
         size: 68,
         color: const Color(0xFFE53935),
-        onTap: () => _sendCommand(provider, TvCommand.power),
+        onTap: () => _send(TvCommand.power),
         child: const Icon(
           Icons.power_settings_new_rounded,
           color: Colors.white,
@@ -361,52 +190,46 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
     );
   }
 
-  Widget _buildVolumeChannelRow(DeviceProvider provider) {
+  Widget _buildVolumeChannelRow() {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
       children: [
-        _buildLabeledControl(
+        _buildLabeledColumn(
           label: 'VOLUME',
           topIcon: Icons.volume_up_rounded,
           bottomIcon: Icons.volume_down_rounded,
-          onTop: () => _sendCommand(provider, TvCommand.volumeUp),
-          onBottom: () => _sendCommand(provider, TvCommand.volumeDown),
+          onTop: () => _send(TvCommand.volumeUp),
+          onBottom: () => _send(TvCommand.volumeDown),
         ),
         Column(
           children: [
             const SizedBox(height: 12),
             RemoteButton(
               size: 56,
-              onTap: () => _sendCommand(provider, TvCommand.mute),
-              child: const Icon(
-                Icons.volume_off_rounded,
-                color: Colors.white70,
-                size: 24,
-              ),
+              onTap: () => _send(TvCommand.mute),
+              child: const Icon(Icons.volume_off_rounded,
+                  color: Colors.white70, size: 24),
             ),
             const SizedBox(height: 6),
-            const Text(
-              'MUTE',
-              style: TextStyle(
-                color: Color(0xFF9090B0),
-                fontSize: 10,
-                letterSpacing: 1,
-              ),
-            ),
+            const Text('MUTE',
+                style: TextStyle(
+                    color: Color(0xFF9090B0),
+                    fontSize: 10,
+                    letterSpacing: 1)),
           ],
         ),
-        _buildLabeledControl(
+        _buildLabeledColumn(
           label: 'CHANNEL',
           topIcon: Icons.keyboard_arrow_up_rounded,
           bottomIcon: Icons.keyboard_arrow_down_rounded,
-          onTop: () => _sendCommand(provider, TvCommand.channelUp),
-          onBottom: () => _sendCommand(provider, TvCommand.channelDown),
+          onTop: () => _send(TvCommand.channelUp),
+          onBottom: () => _send(TvCommand.channelDown),
         ),
       ],
     );
   }
 
-  Widget _buildLabeledControl({
+  Widget _buildLabeledColumn({
     required String label,
     required IconData topIcon,
     required IconData bottomIcon,
@@ -415,50 +238,43 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
   }) {
     return Column(
       children: [
-        Text(
-          label,
-          style: const TextStyle(
-            color: Color(0xFF9090B0),
-            fontSize: 10,
-            letterSpacing: 1,
-          ),
-        ),
+        Text(label,
+            style: const TextStyle(
+                color: Color(0xFF9090B0), fontSize: 10, letterSpacing: 1)),
         const SizedBox(height: 8),
         RemoteButton(
-          size: 52,
-          onTap: onTop,
-          child: Icon(topIcon, color: Colors.white70, size: 26),
-        ),
+            size: 52,
+            onTap: onTop,
+            child: Icon(topIcon, color: Colors.white70, size: 26)),
         const SizedBox(height: 8),
         RemoteButton(
-          size: 52,
-          onTap: onBottom,
-          child: Icon(bottomIcon, color: Colors.white70, size: 26),
-        ),
+            size: 52,
+            onTap: onBottom,
+            child: Icon(bottomIcon, color: Colors.white70, size: 26)),
       ],
     );
   }
 
-  Widget _buildBottomRow(DeviceProvider provider) {
+  Widget _buildBottomRow() {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
       children: [
-        _buildIconLabelButton(
+        _buildIconLabel(
           icon: Icons.arrow_back_rounded,
           label: 'BACK',
-          onTap: () => _sendCommand(provider, TvCommand.back),
+          onTap: () => _send(TvCommand.back),
         ),
-        _buildIconLabelButton(
+        _buildIconLabel(
           icon: Icons.home_rounded,
           label: 'HOME',
-          onTap: () => _sendCommand(provider, TvCommand.home),
+          onTap: () => _send(TvCommand.home),
           color: _accent,
         ),
       ],
     );
   }
 
-  Widget _buildIconLabelButton({
+  Widget _buildIconLabel({
     required IconData icon,
     required String label,
     required VoidCallback onTap,
@@ -473,20 +289,13 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
           child: Icon(icon, color: Colors.white70, size: 24),
         ),
         const SizedBox(height: 6),
-        Text(
-          label,
-          style: const TextStyle(
-            color: Color(0xFF9090B0),
-            fontSize: 10,
-            letterSpacing: 1,
-          ),
-        ),
+        Text(label,
+            style: const TextStyle(
+                color: Color(0xFF9090B0), fontSize: 10, letterSpacing: 1)),
       ],
     );
   }
 }
-
-// ─────────────────────────── Connection Status Widget ──────────────────────
 
 class _ConnectionStatus extends StatelessWidget {
   final DriverState state;
@@ -504,10 +313,9 @@ class _ConnectionStatus extends StatelessWidget {
     return Row(
       children: [
         Container(
-          width: 6,
-          height: 6,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-        ),
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
         const SizedBox(width: 5),
         Text(label, style: TextStyle(color: color, fontSize: 11)),
       ],
