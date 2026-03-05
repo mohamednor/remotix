@@ -78,6 +78,12 @@ class DeviceListScreen extends StatelessWidget {
               fontSize: 18),
         ),
         actions: [
+          // ✅ زر debug مؤقت — لمعرفة إيه اللي التلفزيون بيبعته
+          IconButton(
+            icon: const Icon(Icons.bug_report_rounded, color: Colors.orange),
+            tooltip: 'Debug WS',
+            onPressed: () => Navigator.of(context).pushNamed('/debug'),
+          ),
           IconButton(
             icon: const Icon(Icons.refresh_rounded, color: Color(0xFF6C63FF)),
             onPressed: () {
