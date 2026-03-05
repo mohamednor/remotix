@@ -77,7 +77,7 @@ class DeviceProvider extends ChangeNotifier {
       _errorMessage = null;
       notifyListeners();
 
-      final driver = DriverFactory.create(device);
+      final driver = await DriverFactory.createWithDetection(device);
       _driver = driver;
 
       _driverStateSub = driver.stateStream.listen((state) {
