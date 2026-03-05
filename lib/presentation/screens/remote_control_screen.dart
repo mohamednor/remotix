@@ -29,20 +29,15 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
   @override
   void initState() {
     super.initState();
-    // راقب لو التلفزيون طلب PIN
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _checkPinNeeded();
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkPinNeeded());
   }
 
   void _checkPinNeeded() {
     if (!mounted) return;
     final provider = context.read<DeviceProvider>();
-    if (provider.waitingForPin && !_pinDialogShown) {
+    if (provider.showPinScreen && !_pinDialogShown) {
       final driver = provider.currentDriver;
-      if (driver is LgWebOsDriver) {
-        _showPinScreen(driver);
-      }
+      if (driver is LgWebOsDriver) _showPinScreen(driver);
     }
   }
 
@@ -60,7 +55,6 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
     _pinDialogShown = false;
 
     if (result != true && mounted) {
-      // المستخدم ألغى → ارجع
       final provider = context.read<DeviceProvider>();
       await provider.disconnect();
       if (mounted) Navigator.of(context).pop();
@@ -71,13 +65,10 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
     final provider = context.read<DeviceProvider>();
     try {
       await provider.sendCommand(cmd);
-      if (_errorMsg != null && mounted) {
-        setState(() => _errorMsg = null);
-      }
+      if (_errorMsg != null && mounted) setState(() => _errorMsg = null);
     } catch (e) {
       AppLogger.e('RemoteScreen: sendCommand failed', e);
-      final msg = e
-          .toString()
+      final msg = e.toString()
           .replaceAll('Exception:', '')
           .replaceAll('DriverException:', '')
           .trim();
@@ -96,8 +87,7 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
     final device = provider.selectedDevice;
     final driverState = provider.driverState;
 
-    // ✅ لو التلفزيون طلب PIN اعرض الشاشة
-    if (provider.waitingForPin && !_pinDialogShown) {
+    if (provider.showPinScreen && !_pinDialogShown) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _checkPinNeeded());
     }
 
@@ -142,12 +132,12 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Error banner
             if (_errorMsg != null)
               Container(
                 width: double.infinity,
                 color: const Color(0xFFE53935).withOpacity(0.18),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 10),
                 child: Row(
                   children: [
                     const Icon(Icons.error_outline_rounded,
@@ -167,12 +157,12 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
                 ),
               ),
 
-            // Connecting banner
             if (driverState == DriverState.connecting)
               Container(
                 width: double.infinity,
                 color: _accent.withOpacity(0.12),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 8),
                 child: const Row(
                   children: [
                     SizedBox(
@@ -187,12 +177,12 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
                 ),
               ),
 
-            // PIN banner
-            if (provider.waitingForPin)
+            if (provider.showPinScreen)
               Container(
                 width: double.infinity,
                 color: const Color(0xFFFFB347).withOpacity(0.15),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 10),
                 child: Row(
                   children: [
                     const Icon(Icons.pin_rounded,
@@ -219,7 +209,8 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
 
             Expanded(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 24, vertical: 16),
                 child: Column(
                   children: [
                     _buildPowerButton(),
@@ -277,7 +268,9 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
             const SizedBox(height: 6),
             const Text('MUTE',
                 style: TextStyle(
-                    color: Color(0xFF9090B0), fontSize: 10, letterSpacing: 1)),
+                    color: Color(0xFF9090B0),
+                    fontSize: 10,
+                    letterSpacing: 1)),
           ],
         ),
         _buildLabeledColumn(
@@ -302,7 +295,9 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
       children: [
         Text(label,
             style: const TextStyle(
-                color: Color(0xFF9090B0), fontSize: 10, letterSpacing: 1)),
+                color: Color(0xFF9090B0),
+                fontSize: 10,
+                letterSpacing: 1)),
         const SizedBox(height: 8),
         RemoteButton(
             size: 52,
@@ -353,7 +348,9 @@ class _RemoteControlScreenState extends State<RemoteControlScreen> {
         const SizedBox(height: 6),
         Text(label,
             style: const TextStyle(
-                color: Color(0xFF9090B0), fontSize: 10, letterSpacing: 1)),
+                color: Color(0xFF9090B0),
+                fontSize: 10,
+                letterSpacing: 1)),
       ],
     );
   }
@@ -376,7 +373,8 @@ class _ConnectionStatus extends StatelessWidget {
       children: [
         Container(
             width: 6, height: 6,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+            decoration:
+                BoxDecoration(color: color, shape: BoxShape.circle)),
         const SizedBox(width: 5),
         Text(label, style: TextStyle(color: color, fontSize: 11)),
       ],
