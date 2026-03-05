@@ -1,5 +1,4 @@
 // lib/main.dart
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -13,28 +12,22 @@ import 'presentation/screens/splash_screen.dart';
 import 'presentation/screens/device_scan_screen.dart';
 import 'presentation/screens/device_list_screen.dart';
 import 'presentation/screens/remote_control_screen.dart';
+import 'presentation/screens/debug_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Lock to portrait
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
-
-  // Initialize AdMob
   await MobileAds.instance.initialize();
   AppLogger.i('AdMob initialized');
-
-  // Set dark status bar
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
       statusBarIconBrightness: Brightness.light,
     ),
   );
-
   runApp(const RemotixApp());
 }
 
@@ -63,6 +56,7 @@ class RemotixApp extends StatelessWidget {
           '/scan': (_) => const DeviceScanScreen(),
           '/devices': (_) => const DeviceListScreen(),
           '/remote': (_) => const RemoteControlScreen(),
+          '/debug': (_) => const DebugScreen(),
         },
       ),
     );
