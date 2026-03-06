@@ -30,7 +30,6 @@ class LgWebOsDriver extends TvDriver {
   bool _muteState = false;
   bool _isRegistered = false;
 
-  // ✅ completer واحد نشيل فيه الـ registered event
   Completer<void>? _registeredCompleter;
 
   LgWebOsDriver(this.ipAddress);
@@ -85,8 +84,6 @@ class LgWebOsDriver extends TvDriver {
     } catch (_) {}
   }
 
-  // ─── Connect ──────────────────────────────────────────────────────
-
   @override
   Future<void> connect() async {
     _setState(DriverState.connecting);
@@ -115,7 +112,6 @@ class LgWebOsDriver extends TvDriver {
     _socket = ws;
     AppLogger.i('LG: socket open');
 
-    // ✅ completer جديد لكل connect
     _registeredCompleter = Completer<void>();
 
     ws.listen(
@@ -140,53 +136,40 @@ class LgWebOsDriver extends TvDriver {
     _sendRegister(force: false);
 
     final hasKey = (_clientKey ?? '').isNotEmpty;
+    bool ok = await _waitReg(hasKey ? 8 : 60);
 
-    if (hasKey) {
-      // لو عنده key → بيرد خلال ثواني
-      final ok = await _waitReg(8);
-      if (!ok) {
-        // الـ key اترفض → امسحه وابعت register تاني
-        AppLogger.w('LG: key rejected, clearing');
-        await _deleteKey();
-        _isRegistered = false;
-        _registeredCompleter = Completer<void>();
-        _sendRegister(force: true);
-        // ✅ دلوقتي ننتظر PIN من المستخدم — connect() بيرجع هنا
-        // والـ submitPin() هو اللي هيكمل الـ registration
-        final ok2 = await _waitReg(120);
-        if (!ok2) {
-          _setState(DriverState.error);
-          throw const ConnectionException('LG: انتهت مهلة الاقتران.');
-        }
-      }
-    } else {
-      // ✅ مفيش key → connect() بترجع فوراً بدون ما تستنى
-      // الـ submitPin() هو اللي هيكمل لما المستخدم يدخل الـ PIN
-      AppLogger.i('LG: no key — waiting for PIN from user');
-      // بنستنى بس 3 ثواني عشان نتأكد الـ socket شغال
-      await Future.delayed(const Duration(seconds: 3));
-      // لو registered جه في الـ 3 ثواني دول (key محفوظ مثلاً) كويس
-      // لو لأ، مش مشكلة — submitPin() هيكمل
+    if (!ok && hasKey) {
+      AppLogger.w('LG: key rejected, retry');
+      await _deleteKey();
+      _isRegistered = false;
+      _registeredCompleter = Completer<void>();
+      _sendRegister(force: true);
+      ok = await _waitReg(60);
+    }
+
+    if (!ok) {
+      _setState(DriverState.error);
+      throw const ConnectionException(
+        'LG: انتهت مهلة الاقتران.\nوافق على الطلب على شاشة التلفزيون.',
+      );
     }
 
     if (_socket == null || _socket!.readyState != WebSocket.open) {
       _setState(DriverState.error);
-      throw const ConnectionException('LG: socket closed');
+      throw const ConnectionException('LG: socket closed after registration');
     }
 
-    // ✅ نعلن connected حتى لو مش registered لحد دلوقتي
-    // عشان الـ UI يعرف يعرض شاشة PIN
     _setState(DriverState.connected);
     _reconnectAttempts = 0;
-    AppLogger.i('LG: socket ready, registered=$_isRegistered');
-  }
+    AppLogger.i('LG: READY ✅ registered=$_isRegistered');
 
-  // ─── Register ─────────────────────────────────────────────────────
+    _requestPointer();
+  }
 
   void _sendRegister({required bool force}) {
     final payload = <String, dynamic>{
       'forcePairing': force,
-      'pairingType': 'PIN',
+      'pairingType': 'PROMPT',
       'manifest': {
         'manifestVersion': 1,
         'appVersion': '1.1',
@@ -214,41 +197,11 @@ class LgWebOsDriver extends TvDriver {
       payload['client-key'] = _clientKey;
     }
 
-    AppLogger.i('LG: register (force=$force hasKey=${payload.containsKey('client-key')})');
+    AppLogger.i('LG: register PROMPT (force=$force hasKey=${payload.containsKey('client-key')})');
     _tx({'id': 'reg_0', 'type': 'register', 'payload': payload});
   }
 
-  // ✅ الـ UI بيستدعيه لما المستخدم يكتب الـ PIN
-  Future<bool> submitPin(String pin) async {
-    AppLogger.i('LG: submitPin=$pin');
-
-    // ✅ completer جديد ينتظر الـ registered بعد الـ PIN
-    if (_registeredCompleter == null || _registeredCompleter!.isCompleted) {
-      _registeredCompleter = Completer<void>();
-    }
-
-    // ابعت الـ PIN للتلفزيون
-    _tx({
-      'id': 'pin_${++_messageId}',
-      'type': 'request',
-      'uri': 'ssap://pairing/setPin',
-      'payload': {'pin': pin},
-    });
-
-    // ✅ استنى الـ registered event — ده بييجي بعد ما التلفزيون يقبل الـ PIN
-    try {
-      await _registeredCompleter!.future
-          .timeout(const Duration(seconds: 10));
-      AppLogger.i('LG: PIN accepted, registered ✅');
-
-      // طلب pointer socket بعد ما registration اكتمل
-      _requestPointer();
-      return true;
-    } catch (e) {
-      AppLogger.w('LG: PIN rejected or timeout: $e');
-      return false;
-    }
-  }
+  Future<bool> submitPin(String pin) async => _isRegistered;
 
   Future<bool> _waitReg(int secs) async {
     try {
@@ -258,8 +211,6 @@ class LgWebOsDriver extends TvDriver {
       return _isRegistered;
     }
   }
-
-  // ─── Message Handler ──────────────────────────────────────────────
 
   void _onMessage(String raw) {
     AppLogger.d('LG ◀ $raw');
@@ -277,8 +228,7 @@ class LgWebOsDriver extends TvDriver {
         final key = (msg['payload'] as Map?)?['client-key'];
         if (key is String && key.isNotEmpty) _saveKey(key);
         _isRegistered = true;
-        AppLogger.i('LG: registered ✅ key=$key');
-        // ✅ complete أي completer شغال دلوقتي
+        AppLogger.i('LG: registered ✅');
         if (_registeredCompleter?.isCompleted == false) {
           _registeredCompleter!.complete();
         }
@@ -300,8 +250,6 @@ class LgWebOsDriver extends TvDriver {
         }
     }
   }
-
-  // ─── Pointer ──────────────────────────────────────────────────────
 
   void _requestPointer() {
     _tx({
@@ -337,8 +285,6 @@ class LgWebOsDriver extends TvDriver {
     }
   }
 
-  // ─── TX ───────────────────────────────────────────────────────────
-
   void _tx(Map<String, dynamic> payload) {
     final s = _socket;
     if (s == null) { AppLogger.w('LG TX: socket null'); return; }
@@ -363,31 +309,18 @@ class LgWebOsDriver extends TvDriver {
       p.add('type:button\nname:$name\n\n');
       AppLogger.d('LG PTR ▶ $name');
     } else {
-      _ssapFallback(name);
+      // ✅ SSAP fallback لكل الأزرار
+      _tx({'id': 'cmd_${++_messageId}', 'type': 'request',
+          'uri': 'ssap://com.webos.service.remote.control/sendRemoteKey',
+          'payload': {'keyCode': name}});
     }
   }
-
-  void _ssapFallback(String name) {
-    switch (name) {
-      case 'HOME':
-        _tx({'id': 'cmd_${++_messageId}', 'type': 'request',
-            'uri': 'ssap://system.launcher/open',
-            'payload': {'id': 'com.webos.app.home'}});
-      case 'BACK':
-        _tx({'id': 'cmd_${++_messageId}', 'type': 'request',
-            'uri': 'ssap://com.webos.service.ime/sendEnterKey',
-            'payload': {}});
-    }
-  }
-
-  // ─── Commands ─────────────────────────────────────────────────────
 
   @override
   Future<void> sendCommand(TvCommand command) async {
     AppLogger.i('LG: cmd=$command reg=$_isRegistered socket=${_socket?.readyState}');
 
     if (!_isRegistered) {
-      // ✅ استنى شوية — ممكن الـ registered لسه جاي
       final comp = _registeredCompleter;
       if (comp != null && !comp.isCompleted) {
         try {
@@ -434,8 +367,6 @@ class LgWebOsDriver extends TvDriver {
       case TvCommand.home:  await _pointerTx('HOME');
     }
   }
-
-  // ─── Reconnect ────────────────────────────────────────────────────
 
   void _scheduleReconnect() {
     if (_reconnectAttempts >= AppConstants.maxReconnectAttempts) return;
